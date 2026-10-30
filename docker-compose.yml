@@ -1,0 +1,14 @@
+services:
+  lite-sync:
+    build: .
+    image: lite-sync:latest
+    container_name: lite-sync
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LITE_SYNC_PUBLIC_URL: https://${LITE_SYNC_DOMAIN}
+    # Listens on this machine only. The reverse proxy (for example 1Panel) provides HTTPS.
+    ports:
+      - "127.0.0.1:${LITE_SYNC_PORT:-28470}:28470"
+    volumes:
+      - ./data:/data

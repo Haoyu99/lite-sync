@@ -1,0 +1,11 @@
+{
+  "name": "@lite-sync/plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs"
+  },
+  "dependencies": { "@lite-sync/core": "0.1.0" },
+  "devDependencies": { "esbuild": "0.28.2", "obsidian": "1.14.4" }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "lite-sync",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/core", "packages/server", "packages/plugin", "packages/admin"],
+  "scripts": {
+    "build": "npm run build -w @lite-sync/admin && npm run build -w @lite-sync/plugin",
+    "check": "tsc -p packages/core && tsc -p packages/server && tsc -p packages/plugin && npm run check -w @lite-sync/admin",
+    "test": "node --test --experimental-strip-types packages/core/test/core.test.ts packages/server/test/server.test.ts packages/plugin/test/engine.test.ts",
+    "dev:server": "npm run dev -w @lite-sync/server",
+    "dev:admin": "npm run dev -w @lite-sync/admin"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "5.9.3"
+  }
+}

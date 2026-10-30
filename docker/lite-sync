@@ -1,0 +1,5 @@
+#!/bin/sh
+# lite-sync              start the server
+# lite-sync setup-link   print a new one-time setup link (before initialisation only)
+# lite-sync reset-2fa    remove TOTP and recovery codes; the next login enrols again
+exec node --experimental-strip-types --no-warnings=ExperimentalWarning /app/packages/server/src/main.ts "$@"

@@ -1,0 +1,17 @@
+{
+  "name": "@lite-sync/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --experimental-strip-types --watch src/main.ts",
+    "start": "node --experimental-strip-types src/main.ts"
+  },
+  "dependencies": {
+    "@lite-sync/core": "0.1.0",
+    "@hono/node-server": "2.1.5",
+    "hono": "4.13.14",
+    "ws": "8.22.0"
+  },
+  "devDependencies": { "@types/ws": "8.18.2" }
+}
