@@ -2,6 +2,18 @@ node_modules/
 dist/
 data/
 .env
+.env.*
+!.env.example
 *.log
 packages/plugin/main.js
 .idea/
+
+# Local databases and system files
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+.DS_Store
+Thumbs.db

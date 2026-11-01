@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- v2: bars 36 high (was 32) with a 20 gap, so both stay open at 16 px. Centred on 128/128. -->
+  <path fill="currentColor" fill-rule="evenodd" d="M72 16H184A56 56 0 0 1 240 72V184A56 56 0 0 1 184 240H72A56 56 0 0 1 16 184V72A56 56 0 0 1 72 16ZM70 82H146A18 18 0 0 1 146 118H70A18 18 0 0 1 70 82ZM110 138H186A18 18 0 0 1 186 174H110A18 18 0 0 1 110 138Z"/>
+</svg>

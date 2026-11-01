@@ -8,28 +8,30 @@
     let { onSignOut }: { onSignOut: () => void } = $props();
 
     const NAV = [
-        { path: "/", label: "设备", icon: "💻" },
-        { path: "/files", label: "文件", icon: "📄" },
-        { path: "/activity", label: "操作记录", icon: "🕘" },
-        { path: "/settings", label: "设置", icon: "⚙️" },
+        { path: "/", label: "设备" },
+        { path: "/files", label: "文件" },
+        { path: "/activity", label: "操作记录" },
+        { path: "/settings", label: "设置" },
     ];
 
     const section = $derived(NAV.find((n) => n.path !== "/" && route.path.startsWith(n.path))?.path ?? "/");
 </script>
 
-<div class="shell">
-    <nav class="rail" aria-label="主导航">
-        <span class="wordmark">lite-sync</span>
-        <div class="nav">
-            {#each NAV as n (n.path)}
-                <a href="#{n.path}" aria-current={section === n.path ? "page" : undefined}><span class="nav-icon" aria-hidden="true">{n.icon}</span>{n.label}</a>
-            {/each}
+<div class="app">
+    <header class="topbar">
+        <div class="topbar-inner">
+            <span class="wordmark">lite-sync</span>
+            <nav class="nav" aria-label="主导航">
+                {#each NAV as n (n.path)}
+                    <a href="#{n.path}" aria-current={section === n.path ? "page" : undefined}>{n.label}</a>
+                {/each}
+            </nav>
+            <div class="topbar-end">
+                <span class="lock-state" title="30 分钟无操作自动退出">已解锁</span>
+                <button class="btn btn-quiet btn-sm" onclick={onSignOut}>退出</button>
+            </div>
         </div>
-        <div class="rail-foot">
-            <span class="lock-state">已解锁 · 30 分钟无操作自动退出</span>
-            <button class="btn btn-quiet btn-sm" style="justify-self: start" onclick={onSignOut}>退出</button>
-        </div>
-    </nav>
+    </header>
     <main class="main">
         {#if section === "/files"}
             <Files />

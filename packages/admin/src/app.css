@@ -1,5 +1,5 @@
 /* lite-sync console, Notion style (stylekit.top/zh/styles/notion-style).
-   Beige sidebar, warm ink, hairline borders, 150 ms colour-only transitions, no lift or scale.
+   Top bar, warm ink, hairline borders, 150 ms colour-only transitions, no lift or scale.
    Contrast-checked deviations from the kit: the primary button uses #1a6dc4 instead of #2eaadc
    (white text needs 4.5:1), and secondary text uses #73726e instead of #9b9a97. */
 
@@ -19,7 +19,12 @@
     --blue-btn: #1a6dc4;
     --blue-btn-hover: #155da8;
     --blue-soft: rgba(35, 131, 226, 0.12);
-    --cell: #2383e2;
+    --heat-0: #ebedf0;
+    --heat-1: #9be9a8;
+    --heat-2: #40c463;
+    --heat-3: #30a14e;
+    --heat-4: #216e39;
+    --heat-edge: rgba(27, 31, 35, 0.06);
 
     /* Notion select-tag colours */
     --tag-green-bg: #dbeddb;
@@ -60,7 +65,12 @@
         --blue-btn: #2383e2;
         --blue-btn-hover: #0077d4;
         --blue-soft: rgba(35, 131, 226, 0.2);
-        --cell: #529cca;
+        --heat-0: #2a2a2a;
+        --heat-1: #0e4429;
+        --heat-2: #006d32;
+        --heat-3: #26a641;
+        --heat-4: #39d353;
+        --heat-edge: rgba(255, 255, 255, 0.05);
         --tag-green-bg: #2b593f;
         --tag-green: rgba(255, 255, 255, 0.86);
         --tag-yellow-bg: #89632a;
@@ -402,18 +412,15 @@ select {
     white-space: nowrap;
 }
 
-/* The sync glyph doubles as the product icon. */
+/* The logo mark (design/logo/mark-equal-v2.svg), drawn in the current text colour so it follows the theme. */
 .wordmark::before {
-    content: "⇅";
-    display: inline-grid;
-    place-items: center;
+    content: "";
+    flex: none;
     width: 22px;
     height: 22px;
-    border-radius: 4px;
-    background: var(--ink);
-    color: var(--page);
-    font-size: 13px;
-    font-weight: 700;
+    background: currentColor;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath fill-rule='evenodd' d='M72 16H184A56 56 0 0 1 240 72V184A56 56 0 0 1 184 240H72A56 56 0 0 1 16 184V72A56 56 0 0 1 72 16ZM70 82H146A18 18 0 0 1 146 118H70A18 18 0 0 1 70 82ZM110 138H186A18 18 0 0 1 186 174H110A18 18 0 0 1 110 138Z'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath fill-rule='evenodd' d='M72 16H184A56 56 0 0 1 240 72V184A56 56 0 0 1 184 240H72A56 56 0 0 1 16 184V72A56 56 0 0 1 72 16ZM70 82H146A18 18 0 0 1 146 118H70A18 18 0 0 1 70 82ZM110 138H186A18 18 0 0 1 186 174H110A18 18 0 0 1 110 138Z'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 /* What the server stores: a Notion property list. */
@@ -454,41 +461,39 @@ select {
     border-radius: 3px;
 }
 
-/* ---- shell ----------------------------------------------------------------------------- */
+/* ---- shell: top bar and centred content ---------------------------------------------- */
 
-.shell {
-    display: grid;
-    grid-template-columns: 240px 1fr;
+.app {
     min-height: 100dvh;
-    /* Hard stop, not a gradient: keeps the beige sidebar column full height on long pages. */
-    background: linear-gradient(to right, var(--side) 240px, var(--page) 240px);
+    background: var(--page);
 }
 
-.rail {
+.topbar {
     position: sticky;
     top: 0;
-    height: 100dvh;
-    padding: 12px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    background: var(--side);
-    border-right: 1px solid var(--line);
+    z-index: 5;
+    background: var(--page);
+    border-bottom: 1px solid var(--line);
 }
 
-.rail .wordmark {
-    padding: 6px 10px;
+.topbar-inner {
+    max-width: 1320px;
+    height: 48px;
+    margin: 0 auto;
+    padding: 0 32px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
 }
 
 .nav {
-    display: grid;
-    gap: 1px;
+    display: flex;
+    gap: 2px;
 }
 
 .nav a {
     display: flex;
     align-items: center;
-    gap: 8px;
     height: 30px;
     padding: 0 10px;
     border-radius: 4px;
@@ -509,17 +514,11 @@ select {
     color: var(--ink);
 }
 
-.nav-icon {
-    width: 18px;
-    text-align: center;
-    font-size: 15px;
-}
-
-.rail-foot {
-    margin-top: auto;
-    display: grid;
+.topbar-end {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
     gap: 6px;
-    padding: 0 10px 6px;
     font-size: 12px;
     color: var(--ink-2);
 }
@@ -539,16 +538,14 @@ select {
     background: #4dab9a;
 }
 
-.rail-foot .btn {
-    margin-left: -8px;
-}
-
 .main {
-    padding: 48px 56px 80px;
-    max-width: 1080px;
-    width: 100%;
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 36px 32px 80px;
     display: grid;
-    gap: 28px;
+    /* minmax(0, 1fr): wide children such as the heatmap scroll inside their panel instead of widening the page. */
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
     align-content: start;
 }
 
@@ -567,6 +564,11 @@ select {
     line-height: 1.2;
 }
 
+.summary-line {
+    font-size: 14px;
+    color: var(--ink-2);
+}
+
 .panel {
     background: var(--surface);
     border: 1px solid var(--line);
@@ -577,12 +579,15 @@ select {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
     padding: 12px 16px;
     border-bottom: 1px solid var(--line);
 }
 
 .panel-head h2 {
+    display: flex;
+    align-items: center;
     font-size: 14px;
     font-weight: 600;
 }
@@ -600,42 +605,16 @@ select {
     justify-items: center;
 }
 
-/* ---- overview: server head and device ledger ------------------------------------------ */
-
-.head {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 8px 32px;
-    align-items: end;
-    padding-bottom: 20px;
-    border-bottom: 1px solid var(--line);
-}
-
-.head-seq {
-    font-size: 44px;
-    font-weight: 700;
-    line-height: 1;
-    letter-spacing: -0.02em;
-    font-variant-numeric: tabular-nums;
-}
-
-.head-label {
-    font-size: 13px;
-    color: var(--ink-2);
-    margin-top: 8px;
-}
-
 .facts {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 8px;
-    justify-content: flex-end;
-    font-size: 13px;
+    gap: 6px;
+    font-size: 12px;
     color: var(--ink-2);
 }
 
 .facts span {
-    padding: 2px 8px;
+    padding: 1px 7px;
     border-radius: 4px;
     background: var(--sunken);
 }
@@ -647,26 +626,58 @@ select {
     font-variant-numeric: tabular-nums;
 }
 
-.ledger {
+/* ---- devices --------------------------------------------------------------------------- */
+
+.os {
+    flex: none;
+    display: block;
+}
+
+.os-badge {
+    flex: none;
     display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    background: var(--sunken);
+    color: var(--ink);
+}
+
+.title-os {
+    display: inline-flex;
+    margin-right: 6px;
 }
 
 .device {
     display: grid;
-    grid-template-columns: minmax(170px, 1fr) minmax(0, 2fr) 250px;
-    gap: 20px;
+    grid-template-columns: minmax(0, 1fr) auto auto 36px;
+    gap: 16px;
     align-items: center;
-    padding: 14px 16px;
+    padding: 10px 12px 10px 16px;
     border-top: 1px solid var(--line);
     transition: background-color 0.15s;
 }
 
 .device:first-child {
     border-top: 0;
+    border-radius: 8px 8px 0 0;
+}
+
+.device:last-child {
+    border-radius: 0 0 8px 8px;
+}
+
+.device:only-child {
+    border-radius: 8px;
 }
 
 .device:hover {
     background: var(--side);
+}
+
+.device.selected {
+    background: var(--blue-soft);
 }
 
 .device.stale,
@@ -674,8 +685,28 @@ select {
     opacity: 0.55;
 }
 
+.device-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+}
+
+.device-text {
+    display: grid;
+    min-width: 0;
+}
+
 .device-name {
     font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .device-sub {
@@ -683,43 +714,49 @@ select {
     color: var(--ink-2);
 }
 
-/* One cell per recent server change. Filled: this device has received it. */
-.cells {
+.device-count {
+    font-size: 13px;
+    color: var(--ink-2);
+    white-space: nowrap;
+}
+
+.device-count b {
+    font-weight: 600;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Overflow menu built on <details>, so it needs no script to open and close. */
+.menu {
+    position: relative;
+}
+
+.menu summary {
+    list-style: none;
+    font-size: 16px;
+    letter-spacing: 0.05em;
+}
+
+.menu summary::-webkit-details-marker {
+    display: none;
+}
+
+.menu-pop {
+    position: absolute;
+    right: 0;
+    top: 32px;
+    z-index: 10;
     display: grid;
-    grid-template-columns: repeat(var(--n), minmax(0, 1fr));
-    gap: 2px;
-    height: 18px;
+    min-width: 96px;
+    padding: 4px;
+    border-radius: 6px;
+    background: var(--surface);
+    box-shadow: var(--pop);
 }
 
-.cell {
-    border-radius: 2px;
-    background: var(--sunken);
-    box-shadow: inset 0 0 0 1px var(--line);
-}
-
-.cell.on {
-    background: var(--cell);
-    box-shadow: none;
-    animation: cell-in 0.4s ease-out both;
-    animation-delay: calc(var(--i) * 12ms);
-}
-
-.device.revoked .cell.on {
-    background: var(--ink-3);
-}
-
-@keyframes cell-in {
-    from {
-        opacity: 0;
-    }
-}
-
-.cells-caption {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 4px;
-    font-size: 11px;
-    color: var(--ink-3);
+.menu-pop .btn {
+    justify-content: flex-start;
+    width: 100%;
 }
 
 /* Notion select tags */
@@ -754,35 +791,178 @@ select {
     color: var(--tag-gray);
 }
 
-.device-actions {
-    display: flex;
-    gap: 2px;
-    justify-content: flex-end;
+/* ---- activity heatmap (GitHub contribution calendar) ------------------------------------- */
+
+.heat-scroll {
+    overflow-x: auto;
+    padding-bottom: 4px;
+    container-type: inline-size;
+}
+
+/* Cells grow with the panel: 53 columns plus 52 gaps fill the width after the 20 px day labels and
+   6 px gap. Between 11 px and 20 px; below 11 px the calendar scrolls instead. */
+.heat {
+    --g: 3px;
+    --c: clamp(11px, calc((100cqw - 26px + var(--g)) / 53 - var(--g)), 20px);
+    display: grid;
+    grid-template-columns: 20px auto;
+    column-gap: 6px;
+    row-gap: 4px;
+    width: max-content;
+}
+
+.heat-months {
+    grid-column: 2;
+    display: grid;
+    grid-template-columns: repeat(var(--w), var(--c));
+    gap: var(--g);
+    height: 15px;
+    font-size: 11px;
+    color: var(--ink-3);
+    white-space: nowrap;
+}
+
+.heat-days {
+    grid-column: 1;
+    grid-row: 2;
+    display: grid;
+    grid-template-rows: repeat(7, var(--c));
+    gap: var(--g);
+    font-size: 10px;
+    line-height: var(--c);
+    color: var(--ink-3);
+}
+
+.heat-grid {
+    grid-column: 2;
+    grid-row: 2;
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(7, var(--c));
+    grid-auto-columns: var(--c);
+    gap: var(--g);
+}
+
+.heat-cell {
+    width: var(--c);
+    height: var(--c);
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    background: var(--heat-0);
+    box-shadow: inset 0 0 0 1px var(--heat-edge);
+}
+
+.heat-cell {
+    cursor: pointer;
+}
+
+.heat-cell.future {
+    visibility: hidden;
+}
+
+.heat-cell[data-l="1"] {
+    background: var(--heat-1);
+}
+
+.heat-cell[data-l="2"] {
+    background: var(--heat-2);
+}
+
+.heat-cell[data-l="3"] {
+    background: var(--heat-3);
+}
+
+.heat-cell[data-l="4"] {
+    background: var(--heat-4);
+}
+
+.heat-cell:hover {
+    box-shadow: inset 0 0 0 1px var(--ink-3);
+}
+
+.heat-cell[aria-pressed="true"] {
+    outline: 2px solid var(--ink);
+    outline-offset: 1px;
+}
+
+/* ---- change log -------------------------------------------------------------------------- */
+
+.filter {
+    display: inline-flex;
     align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--line-2);
+    border-radius: 4px;
+    background: var(--sunken);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 0.15s;
 }
 
-.device-actions .chip {
-    margin-right: 6px;
+.filter:hover {
+    background: var(--hover);
 }
 
-.activity {
+.filter span {
+    color: var(--ink-3);
+}
+
+.log {
     list-style: none;
     margin: 0;
-    padding: 0;
+    padding: 0 0 6px;
 }
 
-.activity li {
+.log-day {
+    padding: 12px 16px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-2);
+}
+
+.log-item {
     display: grid;
-    grid-template-columns: 96px 88px 1fr;
+    grid-template-columns: 44px 150px minmax(0, 1fr) auto;
     gap: 12px;
-    padding: 8px 16px;
-    border-top: 1px solid var(--line);
+    align-items: center;
+    width: 100%;
+    padding: 6px 16px;
+    border: 0;
+    background: transparent;
+    text-align: left;
     font-size: 14px;
-    align-items: baseline;
+    cursor: pointer;
+    transition: background-color 0.15s;
 }
 
-.activity li:first-child {
-    border-top: 0;
+.log-item:hover {
+    background: var(--hover);
+}
+
+.log-who {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    color: var(--ink-2);
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.log-end {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.log-rev {
+    font-size: 12px;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
 .op-delete {
@@ -802,6 +982,82 @@ select {
 
 .path .dir {
     color: var(--ink-3);
+}
+
+/* ---- settings form --------------------------------------------------------------------- */
+
+.cfg {
+    display: grid;
+    padding-top: 4px;
+}
+
+.cfg-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px 32px;
+    align-items: start;
+    padding: 16px 0;
+    border-top: 1px solid var(--line);
+}
+
+.cfg-item:first-child {
+    border-top: 0;
+    padding-top: 4px;
+}
+
+.cfg-label {
+    display: grid;
+    gap: 2px;
+    font-size: 14px;
+}
+
+.cfg-label b {
+    font-weight: 500;
+}
+
+.cfg-ex {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px;
+}
+
+.num-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--ink-2);
+}
+
+.input.num {
+    width: 96px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.cfg .error,
+.cfg .notice {
+    margin-bottom: 12px;
+}
+
+.cfg-actions {
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+
+.advanced {
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+}
+
+.advanced summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--ink-2);
+}
+
+.advanced[open] summary {
+    margin-bottom: 12px;
 }
 
 /* ---- pairing code -------------------------------------------------------------------- */
@@ -1138,81 +1394,50 @@ select {
         padding: 24px;
     }
 
-    .shell {
-        grid-template-columns: 1fr;
-        background: var(--page);
-    }
-
-    .rail {
-        position: sticky;
-        z-index: 2;
-        height: auto;
-        background: var(--side);
-        flex-direction: row;
-        align-items: center;
+    .topbar-inner {
+        padding: 0 12px;
         gap: 8px;
-        padding: 8px 12px;
-        border-right: 0;
-        border-bottom: 1px solid var(--line);
-        overflow-x: auto;
     }
 
-    .rail .wordmark {
-        padding: 0 4px 0 0;
+    .topbar .wordmark {
         font-size: 0;
         gap: 0;
     }
 
-    .nav {
-        display: flex;
-    }
-
-    .nav-icon {
-        display: none;
-    }
-
-    .rail-foot {
-        margin: 0 0 0 auto;
-        padding: 0;
-    }
-
-    .rail-foot .lock-state {
+    .topbar .lock-state {
         display: none;
     }
 
     .main {
-        padding: 24px 16px 48px;
-        gap: 24px;
+        padding: 20px 16px 48px;
+        gap: 20px;
     }
 
     .page-head h1 {
         font-size: 26px;
     }
 
-    .head {
-        grid-template-columns: 1fr;
-    }
-
-    .facts {
-        justify-content: flex-start;
-    }
-
     .device {
-        grid-template-columns: 1fr auto;
-        gap: 12px;
+        grid-template-columns: minmax(0, 1fr) auto 36px;
+        gap: 10px;
     }
 
-    .device .track {
-        grid-column: 1 / -1;
-        grid-row: 2;
-    }
-
-    .activity li {
-        grid-template-columns: 80px 1fr;
-    }
-
-    .activity li .who {
+    .device-count {
         display: none;
+    }
+
+
+    .log-item {
+        grid-template-columns: 40px minmax(0, 1fr) auto;
+        padding: 7px 16px;
+    }
+
+    .log-who {
+        display: none;
+    }
+
+    .cfg-item {
+        grid-template-columns: 1fr;
     }
 
     .files {

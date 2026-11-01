@@ -223,6 +223,23 @@ describe("server", () => {
         assert.equal((await admin("/login", { method: "POST", body: JSON.stringify({ loginKey: LOGIN_KEY }) })).status, 200, "passphrase alone now logs in");
     });
 
+    it("counts activity per device and day, and filters the change log", async () => {
+        const { days } = await (await admin("/activity?tz=0")).json();
+        const total = (await (await admin("/overview")).json()).versions;
+        assert.equal(days.reduce((s: number, d: { n: number }) => s + d.n, 0), total);
+        assert.ok(days.every((d: { deviceId: string }) => d.deviceId === deviceId));
+
+        const day = Math.floor(clock / 86_400_000);
+        const all = await (await admin(`/changes?tz=0&device=${deviceId}`)).json();
+        assert.equal(all.entries.length, total);
+        assert.ok(all.entries[0].seq > all.entries.at(-1).seq, "newest first");
+        assert.equal((await (await admin(`/changes?tz=0&day=${day}`)).json()).entries.length, total);
+        assert.equal((await (await admin(`/changes?tz=0&day=${day + 1}`)).json()).entries.length, 0);
+        assert.equal((await (await admin("/changes?tz=0&device=nobody")).json()).entries.length, 0);
+        const page = await (await admin(`/changes?tz=0&before=${all.entries[1].seq}`)).json();
+        assert.equal(page.entries[0].seq, all.entries[2].seq);
+    });
+
     it("stops a revoked device", async () => {
         const overview = await (await admin("/overview")).json();
         assert.equal(overview.devices.length, 1);

@@ -1,25 +1,36 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { type DeviceSummary, type FileEntry, type Overview, type PairingCode, openMeta } from "@lite-sync/core";
+    import type { ActivityDay, ChangeEntry, DeviceSummary, FileEntry, Overview, PairingCode } from "@lite-sync/core";
+    import Heatmap from "../lib/Heatmap.svelte";
     import Modal from "../lib/Modal.svelte";
+    import OsIcon from "../lib/OsIcon.svelte";
     import { api, describe } from "../lib/api";
-    import { PLATFORM, ago, bytes, splitPath, stamp } from "../lib/format";
+    import { PLATFORM, ago, bytes, splitPath } from "../lib/format";
     import { session } from "../lib/session.svelte";
     import { decryptFiles, pathMap } from "../lib/vault";
 
-    const CELLS = 48;
-    const STALE_MS = 7 * 86_400_000;
+    const DAY_MS = 86_400_000;
+    const STALE_MS = 7 * DAY_MS;
+    const tz = -new Date().getTimezoneOffset(); // minutes east of UTC
+    const localDay = (t: number) => Math.floor((t + tz * 60_000) / DAY_MS);
 
     let data = $state<Overview | null>(null);
+    let activity = $state<ActivityDay[]>([]);
     let paths = $state<Map<string, string>>(new Map());
-    let recentPaths = $state<(string | null)[]>([]);
     let error = $state("");
     let now = $state(Date.now());
+
+    // Filters: a device and/or one day. Both narrow the heatmap and the change log.
+    let device = $state<string | null>(null);
+    let day = $state<number | null>(null);
+    let log = $state<ChangeEntry[]>([]);
+    let logMore = $state(false);
+    let logBusy = $state(false);
+    let logReq = 0;
 
     let pairOpen = $state(false);
     let pair = $state<PairingCode | null>(null);
     let pairError = $state("");
-
     let revokeTarget = $state<DeviceSummary | null>(null);
     let revokeOpen = $state(false);
     let renameTarget = $state<DeviceSummary | null>(null);
@@ -29,21 +40,13 @@
 
     async function load() {
         try {
-            const [o, f] = await Promise.all([api.get<Overview>("/overview"), api.get<{ files: FileEntry[] }>("/files")]);
-            const keys = session.keys!;
-            paths = pathMap(await decryptFiles(keys, f.files));
-            recentPaths = await Promise.all(
-                o.recent.map(async (c) => {
-                    if (c.meta) {
-                        try {
-                            return (await openMeta(keys, c.id, c.rev, c.meta)).path;
-                        } catch {
-                            return null;
-                        }
-                    }
-                    return paths.get(c.id) ?? null;
-                })
-            );
+            const [o, a, f] = await Promise.all([
+                api.get<Overview>("/overview"),
+                api.get<{ days: ActivityDay[] }>(`/activity?tz=${tz}`),
+                api.get<{ files: FileEntry[] }>("/files"),
+            ]);
+            paths = pathMap(await decryptFiles(session.keys!, f.files));
+            activity = a.days;
             data = o;
             error = "";
         } catch (e) {
@@ -51,11 +54,38 @@
         }
     }
 
+    async function loadLog(append = false) {
+        const req = ++logReq;
+        const q = new URLSearchParams({ tz: String(tz) });
+        if (device) q.set("device", device);
+        if (day !== null) q.set("day", String(day));
+        if (append && log.length) q.set("before", String(log.at(-1)!.seq));
+        logBusy = true;
+        try {
+            const r = await api.get<{ entries: ChangeEntry[]; more: boolean }>(`/changes?${q}`);
+            if (req !== logReq) return; // a newer filter replaced this request
+            log = append ? [...log, ...r.entries] : r.entries;
+            logMore = r.more;
+        } catch (e) {
+            error = describe(e);
+        } finally {
+            if (req === logReq) logBusy = false;
+        }
+    }
+
+    $effect(() => {
+        void device;
+        void day;
+        void loadLog();
+    });
+
     onMount(() => {
         void load();
         const t = setInterval(() => {
             now = Date.now();
-            if (!pairOpen && !revokeOpen && !renameOpen) void load();
+            if (pairOpen || revokeOpen || renameOpen) return;
+            void load();
+            if (log.length <= 50 && !logBusy) void loadLog();
         }, 15_000);
         const tick = setInterval(() => (now = Date.now()), 1000);
         return () => {
@@ -64,18 +94,59 @@
         };
     });
 
-    const seqs = $derived(data ? Array.from({ length: Math.min(CELLS, data.head) }, (_, i) => data!.head - Math.min(CELLS, data!.head) + 1 + i) : []);
-    const active = $derived(data?.devices.filter((d) => !d.revokedAt) ?? []);
-    const revoked = $derived(data?.devices.filter((d) => d.revokedAt) ?? []);
+    const today = $derived(localDay(now));
+    const counts = $derived.by(() => {
+        const m = new Map<number, number>();
+        for (const a of activity) if (!device || a.deviceId === device) m.set(a.day, (m.get(a.day) ?? 0) + a.n);
+        return m;
+    });
+    const yearTotal = $derived([...counts.values()].reduce((s, n) => s + n, 0));
+    const perDevice = $derived.by(() => {
+        const m = new Map<string, number>();
+        for (const a of activity) if (a.deviceId) m.set(a.deviceId, (m.get(a.deviceId) ?? 0) + a.n);
+        return m;
+    });
+    const devices = $derived(data ? [...data.devices.filter((d) => !d.revokedAt), ...data.devices.filter((d) => d.revokedAt)] : []);
+    const selected = $derived(data?.devices.find((d) => d.id === device) ?? null);
 
     function deviceState(d: DeviceSummary) {
-        if (d.revokedAt) return { cls: "chip-bad", text: "已吊销" };
-        if (d.pending > 0) return { cls: "chip-warn", text: `↑ ${d.pending} 待上传` };
+        if (d.revokedAt) return { cls: "chip-bad", text: "已吊销", ok: false };
+        if (d.pending > 0) return { cls: "chip-warn", text: `↑ ${d.pending} 待上传`, ok: false };
         const behind = (data?.head ?? 0) - d.ackSeq;
-        if (behind > 0) return { cls: "chip-warn", text: `落后 ${behind} 次修改` };
-        if (d.lastSeenAt === null) return { cls: "chip-plain", text: "未连接" };
-        return { cls: "chip-ok", text: "已同步" };
+        if (behind > 0) return { cls: "chip-warn", text: `落后 ${behind} 次修改`, ok: false };
+        if (d.lastSeenAt === null) return { cls: "chip-plain", text: "未连接", ok: false };
+        return { cls: "chip-ok", text: "已同步", ok: true };
     }
+
+    const summary = $derived.by(() => {
+        const active = devices.filter((d) => !d.revokedAt);
+        const lagging = active.filter((d) => !deviceState(d).ok);
+        if (active.length === 0) return "还没有配对的设备";
+        if (lagging.length === 0) return `${active.length} 台设备，全部已同步`;
+        return `${active.length} 台设备，${lagging.map((d) => `${d.name} ${deviceState(d).text}`).join("，")}`;
+    });
+
+    function dayName(d: number): string {
+        if (d === today) return "今天";
+        if (d === today - 1) return "昨天";
+        const t = new Date(d * DAY_MS);
+        const md = `${t.getUTCMonth() + 1}月${t.getUTCDate()}日`;
+        return t.getUTCFullYear() === new Date(now).getFullYear() ? md : `${t.getUTCFullYear()}年${md}`;
+    }
+
+    const clock = (t: number) => {
+        const d = new Date(t);
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    };
+
+    function opLabel(e: ChangeEntry) {
+        if (e.op === "delete") return { cls: "chip-bad", text: "删除" };
+        if (e.op === "restore") return { cls: "chip-plain", text: "恢复" };
+        if (e.rev === 1) return { cls: "chip-ok", text: "新建" };
+        return null;
+    }
+
+    const platformOf = (id: string | null) => data?.devices.find((d) => d.id === id)?.platform ?? "unknown";
 
     async function newCode() {
         pairOpen = true;
@@ -112,6 +183,7 @@
             await api.patch(`/devices/${renameTarget.id}`, { name: renameValue.trim() });
             renameOpen = false;
             await load();
+            void loadLog();
         } catch (err) {
             error = describe(err);
         } finally {
@@ -119,103 +191,130 @@
         }
     }
 
-    const OP = { write: "写入", delete: "删除", restore: "恢复" } as const;
+    function closeMenu(e: Event) {
+        (e.currentTarget as HTMLElement).closest("details")?.removeAttribute("open");
+    }
 </script>
 
 <header class="page-head">
-    <h1>设备</h1>
+    <div class="stack" style="gap: 4px">
+        <h1>设备</h1>
+        {#if data}
+            <p class="summary-line">{summary}</p>
+        {/if}
+    </div>
     <button class="btn btn-primary" onclick={newCode}>添加设备</button>
 </header>
 
 {#if error}<p class="error">{error}</p>{/if}
 
 {#if data}
-    <section class="head" aria-label="服务器状态">
-        <div>
-            <div class="head-seq">{data.head.toLocaleString()}</div>
-            <p class="head-label">服务器已记录的修改次数</p>
-        </div>
-        <div class="facts">
-            <span><b>{data.files.toLocaleString()}</b>个文件</span>
-            <span><b>{data.versions.toLocaleString()}</b>个历史版本</span>
-            <span><b>{bytes(data.storageBytes)}</b>密文</span>
-            {#if data.deletedFiles}<span><b>{data.deletedFiles}</b>个已删除，可恢复</span>{/if}
-        </div>
-    </section>
-
-    <section class="panel" aria-labelledby="devices-title">
-        <div class="panel-head">
-            <h2 id="devices-title">已配对的设备</h2>
-            <span class="faint" style="font-size: 12px">每一格是服务器上的一次修改，实心表示该设备已收到</span>
-        </div>
-        {#if active.length === 0}
+    <section class="panel" aria-label="已配对的设备">
+        {#if devices.length === 0}
             <div class="empty">
                 <p>还没有设备。点「添加设备」获得配对码，在 Obsidian 的 lite-sync 设置里填入。</p>
                 <button class="btn btn-primary" onclick={newCode}>添加设备</button>
             </div>
         {:else}
-            <div class="ledger">
-                {#each [...active, ...revoked] as d (d.id)}
-                    {@const s = deviceState(d)}
-                    <div class="device" class:revoked={!!d.revokedAt} class:stale={!d.revokedAt && d.lastSeenAt !== null && now - d.lastSeenAt > STALE_MS}>
-                        <div>
-                            <div class="device-name">{d.name}</div>
-                            <div class="device-sub">{PLATFORM[d.platform]} · v{d.clientVersion} · {ago(d.lastSeenAt, now)}</div>
-                        </div>
-                        <div class="track">
-                            {#if seqs.length}
-                                <div class="cells" style="--n: {seqs.length}" aria-label="已收到 {Math.min(d.ackSeq, data.head)} / {data.head}">
-                                    {#each seqs as q, i (q)}
-                                        <span class="cell" class:on={d.ackSeq >= q} style="--i: {i}"></span>
-                                    {/each}
-                                </div>
-                                <div class="cells-caption mono">
-                                    <span>#{seqs[0]}</span>
-                                    <span>#{data.head}</span>
-                                </div>
-                            {:else}
-                                <span class="faint" style="font-size: 13px">服务器上还没有修改</span>
-                            {/if}
-                        </div>
-                        <div class="device-actions">
-                            <span class="chip {s.cls}">{s.text}</span>
-                            {#if !d.revokedAt}
-                                <button class="btn btn-quiet btn-sm" onclick={() => ((renameTarget = d), (renameValue = d.name), (renameOpen = true))}>改名</button>
-                                <button class="btn btn-quiet btn-sm btn-danger" onclick={() => ((revokeTarget = d), (revokeOpen = true))}>吊销</button>
-                            {/if}
-                        </div>
-                    </div>
-                {/each}
-            </div>
+            {#each devices as d (d.id)}
+                {@const s = deviceState(d)}
+                <div
+                    class="device"
+                    class:selected={device === d.id}
+                    class:revoked={!!d.revokedAt}
+                    class:stale={!d.revokedAt && d.lastSeenAt !== null && now - d.lastSeenAt > STALE_MS}
+                >
+                    <button class="device-main" aria-pressed={device === d.id} onclick={() => ((device = device === d.id ? null : d.id), (day = null))}>
+                        <span class="os-badge"><OsIcon platform={d.platform} size={18} /></span>
+                        <span class="device-text">
+                            <span class="device-name">{d.name}</span>
+                            <span class="device-sub">{PLATFORM[d.platform]} · v{d.clientVersion} · {ago(d.lastSeenAt, now)}</span>
+                        </span>
+                    </button>
+                    <span class="device-count">近一年 <b>{perDevice.get(d.id) ?? 0}</b> 次修改</span>
+                    <span class="chip {s.cls}">{s.text}</span>
+                    {#if d.revokedAt}
+                        <span></span>
+                    {:else}
+                        <details class="menu">
+                            <summary class="btn btn-quiet btn-sm" aria-label="更多操作">⋯</summary>
+                            <div class="menu-pop">
+                                <button class="btn btn-quiet btn-sm" onclick={(e) => (closeMenu(e), (renameTarget = d), (renameValue = d.name), (renameOpen = true))}>改名</button>
+                                <button class="btn btn-quiet btn-sm btn-danger" onclick={(e) => (closeMenu(e), (revokeTarget = d), (revokeOpen = true))}>吊销</button>
+                            </div>
+                        </details>
+                    {/if}
+                </div>
+            {/each}
         {/if}
     </section>
 
-    <section class="panel" aria-labelledby="recent-title">
+    <section class="panel" aria-labelledby="heat-title">
         <div class="panel-head">
-            <h2 id="recent-title">最近修改</h2>
-            <a href="#/files" style="font-size: 13px">查看全部文件</a>
+            <h2 id="heat-title">
+                {#if selected}<span class="title-os"><OsIcon platform={selected.platform} size={14} /></span>{/if}
+                {selected?.name ?? "全部设备"} · 近一年 {yearTotal.toLocaleString()} 次修改
+            </h2>
+            <span class="facts">
+                <span><b>{data.files.toLocaleString()}</b>个文件</span>
+                <span><b>{data.versions.toLocaleString()}</b>个历史版本</span>
+                <span><b>{bytes(data.storageBytes)}</b>密文</span>
+            </span>
         </div>
-        {#if data.recent.length === 0}
-            <div class="empty"><p>设备开始同步后，这里会列出最近的修改。</p></div>
+        <div class="panel-body">
+            <Heatmap {counts} {today} selected={day} onSelect={(d) => (day = day === d ? null : d)} />
+        </div>
+    </section>
+
+    <section class="panel" aria-labelledby="log-title">
+        <div class="panel-head">
+            <h2 id="log-title">修改记录</h2>
+            <div class="row">
+                {#if selected}
+                    <button class="filter" onclick={() => (device = null)} aria-label="取消设备筛选">
+                        <OsIcon platform={selected.platform} size={12} />{selected.name}<span aria-hidden="true">✕</span>
+                    </button>
+                {/if}
+                {#if day !== null}
+                    <button class="filter" onclick={() => (day = null)} aria-label="取消日期筛选">{dayName(day)}<span aria-hidden="true">✕</span></button>
+                {/if}
+            </div>
+        </div>
+        {#if log.length === 0}
+            <div class="empty"><p>{logBusy ? "正在加载…" : device || day !== null ? "这个范围内没有修改。" : "设备开始同步后，这里会列出每一次修改。"}</p></div>
         {:else}
-            <ul class="activity">
-                {#each data.recent as c, i (c.seq)}
-                    {@const p = recentPaths[i]}
+            <ol class="log">
+                {#each log as e, i (e.seq)}
+                    {@const d = localDay(e.at)}
+                    {#if i === 0 || localDay(log[i - 1]!.at) !== d}
+                        <li class="log-day">{dayName(d)}</li>
+                    {/if}
+                    {@const p = paths.get(e.id)}
+                    {@const op = opLabel(e)}
                     <li>
-                        <span class="mono faint">{stamp(c.at)}</span>
-                        <span class="who muted">{c.deviceName ?? "后台"}</span>
-                        <span class="path op-{c.op}">
-                            {#if p}
-                                {@const sp = splitPath(p)}
-                                <span class="dir">{sp.dir}</span>{sp.name}
-                            {:else}
-                                <span class="faint mono">{c.id.slice(0, 16)}…</span>
-                            {/if}
-                            {#if c.op !== "write"}<span class="chip chip-plain" style="margin-left: 8px">{OP[c.op]}</span>{/if}
-                        </span>
+                        <button class="log-item" onclick={() => (location.hash = `#/files/${e.id}`)}>
+                            <span class="mono faint">{clock(e.at)}</span>
+                            <span class="log-who"><OsIcon platform={platformOf(e.deviceId)} size={13} />{e.deviceName ?? "后台"}</span>
+                            <span class="path" class:op-delete={e.op === "delete"}>
+                                {#if p}
+                                    {@const sp = splitPath(p)}<span class="dir">{sp.dir}</span>{sp.name}
+                                {:else}
+                                    <span class="faint mono">{e.id.slice(0, 16)}…</span>
+                                {/if}
+                            </span>
+                            <span class="log-end">
+                                {#if op}<span class="chip {op.cls}">{op.text}</span>{/if}
+                                <span class="log-rev">第 {e.rev} 版</span>
+                            </span>
+                        </button>
                     </li>
                 {/each}
-            </ul>
+            </ol>
+            {#if logMore}
+                <div class="panel-body" style="text-align: center">
+                    <button class="btn btn-sm" disabled={logBusy} onclick={() => loadLog(true)}>{logBusy ? "正在加载…" : "加载更多"}</button>
+                </div>
+            {/if}
         {/if}
     </section>
 {:else if !error}

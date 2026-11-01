@@ -295,7 +295,7 @@
 {
   "schema": 1,
   "sync": { "debounceMs": 2000, "configScanSeconds": 30, "maxFileSizeMB": 50, "massChangeGuard": 20 },
-  "exclude": [".trash/**", "**/.DS_Store"],
+  "exclude": [],
   "obsidian": {
     "appearance": true, "themes": true, "snippets": true, "hotkeys": true,
     "corePlugins": true, "communityPlugins": true, "pluginData": true,

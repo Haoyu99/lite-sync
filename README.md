@@ -1,6 +1,19 @@
 # lite-sync
 
-自用的 Obsidian 同步：端到端加密，服务器只存密文，每个版本都保留并可以回滚。
+lite-sync 是一个自托管的个人 Obsidian 同步项目，由 Obsidian 插件、同步服务端和网页管理后台组成。它把多台设备上的笔记和附件同步到你自己的服务器，使用端到端加密保护文件内容和路径，并保留文件版本，方便查看历史和回滚。
+
+适合希望自行掌握服务器和数据存储、在多台设备之间同步个人笔记库的用户。项目面向单用户使用，目前处于第一阶段开发中。
+
+## 主要功能
+
+- **加密同步**：文件在客户端加密后上传，服务器保存密文；网页后台在浏览器内解密。
+- **多设备同步**：通过插件同步笔记与附件，使用 WebSocket 通知其他设备获取变更。
+- **版本与恢复**：保留文件历史，支持单个文件回滚。
+- **冲突处理**：支持三方合并、冲突副本和大批量删除保护。
+- **网页管理**：查看文件、设备和活动，管理设备配对、吊销及统一配置。
+- **自行部署**：提供 Docker 部署方式，支持口令登录、可选的 TOTP 双重认证和恢复码。
+
+`.obsidian` 配置同步、整库按时间点恢复等功能尚未实现，完整范围见文末。
 
 - 设计：[docs/design.md](docs/design.md)
 - 全流程说明：[docs/flow.md](docs/flow.md)
@@ -39,7 +52,7 @@ npm run build -w @lite-sync/admin
 前提：服务器装有 Docker，并有一个负责 HTTPS 的反向代理（例如 1Panel 的网站功能）。
 
 ```sh
-git clone <仓库地址> lite-sync && cd lite-sync
+git clone https://github.com/Haoyu99/lite-sync.git && cd lite-sync
 cp .env.example .env
 # 编辑 .env：填写 LITE_SYNC_DOMAIN，并用 openssl rand -base64 48 生成 LITE_SYNC_SERVER_KEY
 docker compose up -d --build

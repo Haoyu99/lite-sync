@@ -32,7 +32,16 @@ export class PathFilter {
     private configDir: string;
 
     constructor(exclude: string[], configDir = ".obsidian") {
-        this.patterns = exclude.map(globToRegExp);
+        // Like .gitignore: a pattern without "/" matches a file name in any folder, so "*.pdf" covers
+        // every PDF. A pattern containing "/" (including a leading one) starts at the vault root.
+        this.patterns = exclude
+            .map((g) => g.trim())
+            .filter((g) => g.replace(/^\/+/, "") !== "")
+            .map((g) => {
+                const rooted = g.includes("/");
+                const body = g.replace(/^\/+/, "");
+                return globToRegExp(rooted ? body : `**/${body}`);
+            });
         this.configDir = configDir;
     }
 

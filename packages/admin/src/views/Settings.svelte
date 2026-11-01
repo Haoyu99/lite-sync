@@ -3,6 +3,7 @@
     import {
         type ConfigDoc,
         type PreloginResponse,
+        type SyncConfig,
         DEFAULT_CONFIG,
         DEFAULT_KDF,
         aad,
@@ -28,7 +29,14 @@
     let offNotice = $state("");
     let savingOff = $state(false);
 
-    let configText = $state("");
+    // The form edits the settings the plug-in reads today. Everything else in the stored document
+    // (reserved settings, per-platform overrides) is kept as it is, and editable under "高级".
+    let config = $state<SyncConfig>(normaliseConfig({}));
+    let excludes = $state<string[]>([]);
+    let guard = $state(20);
+    let maxMB = $state(50);
+    let debounceSec = $state(2);
+    let rawText = $state("");
     let configRev = $state(0);
     let configError = $state("");
     let configNotice = $state("");
@@ -48,12 +56,21 @@
     let recCodes = $state<string[]>([]);
     let savingRec = $state(false);
 
+    function fill(c: SyncConfig) {
+        config = c;
+        excludes = [...c.exclude];
+        guard = c.sync.massChangeGuard;
+        maxMB = c.sync.maxFileSizeMB;
+        debounceSec = c.sync.debounceMs / 1000;
+        rawText = JSON.stringify(c, null, 2);
+    }
+
     async function loadConfig() {
         try {
             const doc = await api.get<ConfigDoc>("/config");
             configRev = doc.rev;
             const json = doc.blob ? JSON.parse(fromUtf8(await open(session.keys!.config, fromB64(doc.blob), aad.config(doc.rev)))) : DEFAULT_CONFIG;
-            configText = JSON.stringify(normaliseConfig(json), null, 2);
+            fill(normaliseConfig(json));
         } catch (e) {
             configError = describe(e);
         }
@@ -61,28 +78,44 @@
 
     onMount(loadConfig);
 
-    async function saveConfig() {
+    async function store(next: unknown, note: string) {
         configError = configNotice = "";
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(configText);
-        } catch (e) {
-            return void (configError = `不是有效的 JSON：${(e as Error).message}`);
-        }
-        const config = normaliseConfig(parsed);
         savingConfig = true;
         try {
-            const next = configRev + 1;
-            const blob = toB64(await seal(session.keys!.config, utf8(JSON.stringify(config)), aad.config(next)));
-            const r = await api.put<{ rev: number }>("/config", { baseRev: configRev, blob });
-            configRev = r.rev;
-            configText = JSON.stringify(config, null, 2);
-            configNotice = `已保存为第 ${r.rev} 版，在线设备会立即收到。超出范围的值已调整，未知的项已移除。`;
+            const c = normaliseConfig(next);
+            const rev = configRev + 1;
+            const blob = toB64(await seal(session.keys!.config, utf8(JSON.stringify(c)), aad.config(rev)));
+            configRev = (await api.put<{ rev: number }>("/config", { baseRev: configRev, blob })).rev;
+            fill(c);
+            configNotice = note;
         } catch (e) {
             configError = describe(e);
         } finally {
             savingConfig = false;
         }
+    }
+
+    function saveForm(e: SubmitEvent) {
+        e.preventDefault();
+        const base = $state.snapshot(config);
+        void store(
+            {
+                ...base,
+                exclude: [...new Set(excludes.map((x) => x.trim()).filter(Boolean))],
+                sync: { ...base.sync, massChangeGuard: Math.round(guard), maxFileSizeMB: Math.round(maxMB), debounceMs: Math.round(debounceSec * 1000) },
+            },
+            "已保存。在线的设备会立即收到，其他设备下次连接时收到。"
+        );
+    }
+
+    function saveRaw() {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(rawText);
+        } catch (e) {
+            return void (configError = `不是有效的 JSON：${(e as Error).message}`);
+        }
+        void store(parsed, "已保存 JSON，上面的表单已更新。超出范围的值已调整，不认识的项已移除。");
     }
 
     async function currentLoginKey(pass: string): Promise<string> {
@@ -155,26 +188,70 @@
 
 <section class="panel" aria-labelledby="config-title">
     <div class="panel-head">
-        <h2 id="config-title">统一配置</h2>
-        <span class="faint mono" style="font-size: 12px">第 {configRev} 版 · 加密保存</span>
+        <h2 id="config-title">同步设置</h2>
+        <span class="faint" style="font-size: 12px">所有设备共用 · 加密保存</span>
     </div>
-    <div class="panel-body stack">
-        <p class="muted" style="font-size: 14px">
-            所有设备都从这里读取配置。<span class="mono">exclude</span> 填不同步的路径，例如
-            <span class="mono">"私密/**"</span>；<span class="mono">massChangeGuard</span> 是一次同步中删除或覆盖多少个文件时需要确认。
-            <span class="mono">.obsidian</span> 配置同步会在后续版本提供。
-        </p>
-        <label class="field">
-            <span class="sr-only">配置 JSON</span>
-            <textarea rows="22" spellcheck="false" bind:value={configText}></textarea>
+    <form class="panel-body cfg" onsubmit={saveForm}>
+        <div class="cfg-item">
+            <div class="cfg-label">
+                <b>不同步的文件和文件夹</b>
+                <span class="hint">「私密/**」表示库根目录下的整个私密文件夹，「*.pdf」表示所有文件夹里的 PDF。回收站和 .DS_Store 总是跳过，不用填。</span>
+            </div>
+            <div class="cfg-control stack" style="gap: 6px">
+                {#each excludes as _, i (i)}
+                    <div class="cfg-ex">
+                        <input class="input mono" bind:value={excludes[i]} placeholder="私密/**" spellcheck="false" aria-label="第 {i + 1} 条规则" />
+                        <button type="button" class="btn btn-quiet btn-sm" aria-label="删除第 {i + 1} 条规则" onclick={() => excludes.splice(i, 1)}>✕</button>
+                    </div>
+                {:else}
+                    <p class="faint" style="font-size: 13px">没有规则，全部同步</p>
+                {/each}
+                <button type="button" class="btn btn-sm" style="justify-self: start" onclick={() => excludes.push("")}>+ 添加规则</button>
+            </div>
+        </div>
+
+        <label class="cfg-item">
+            <span class="cfg-label">
+                <b>大批量删除时先确认</b>
+                <span class="hint">其他设备的一次同步要删除或覆盖本机超过这个数量的文件时，先暂停，等你在插件里确认。</span>
+            </span>
+            <span class="cfg-control num-wrap">超过 <input class="input num" type="number" min="1" max="100000" step="1" required bind:value={guard} /> 个文件</span>
         </label>
+
+        <label class="cfg-item">
+            <span class="cfg-label">
+                <b>最大文件大小</b>
+                <span class="hint">超过这个大小的文件不同步，留在原来的设备上。</span>
+            </span>
+            <span class="cfg-control num-wrap"><input class="input num" type="number" min="1" max="500" step="1" required bind:value={maxMB} /> MB</span>
+        </label>
+
+        <label class="cfg-item">
+            <span class="cfg-label">
+                <b>停止编辑后多久上传</b>
+                <span class="hint">停笔这么久之后才上传，避免每敲一个字就上传一次。越短其他设备越快看到。</span>
+            </span>
+            <span class="cfg-control num-wrap"><input class="input num" type="number" min="0.5" max="60" step="0.5" required bind:value={debounceSec} /> 秒</span>
+        </label>
+
         {#if configError}<p class="error">{configError}</p>{/if}
         {#if configNotice}<p class="notice">{configNotice}</p>{/if}
-        <div class="row">
-            <button class="btn btn-primary" disabled={savingConfig} onclick={saveConfig}>{savingConfig ? "正在保存…" : "保存配置"}</button>
-            <button class="btn btn-quiet" onclick={() => (configText = JSON.stringify(DEFAULT_CONFIG, null, 2))}>填入默认值</button>
+        <div class="row cfg-actions">
+            <button class="btn btn-primary" disabled={savingConfig}>{savingConfig ? "正在保存…" : "保存"}</button>
+            <button type="button" class="btn btn-quiet" onclick={() => fill(normaliseConfig({ ...$state.snapshot(config), exclude: DEFAULT_CONFIG.exclude, sync: DEFAULT_CONFIG.sync }))}>恢复默认值</button>
         </div>
-    </div>
+    </form>
+    <details class="advanced">
+        <summary>高级：直接编辑 JSON</summary>
+        <div class="stack">
+            <p class="hint">包含上面的四项，以及手机和电脑分开设置（overrides）、尚未实现的 .obsidian 同步和历史保留设置。</p>
+            <label class="field">
+                <span class="sr-only">配置 JSON</span>
+                <textarea rows="18" spellcheck="false" bind:value={rawText}></textarea>
+            </label>
+            <button type="button" class="btn" style="justify-self: start" disabled={savingConfig} onclick={saveRaw}>保存 JSON</button>
+        </div>
+    </details>
 </section>
 
 <section class="panel" aria-labelledby="pass-title">

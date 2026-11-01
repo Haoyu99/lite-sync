@@ -175,6 +175,25 @@ export interface VersionEntry {
     batchId: string | null;
 }
 
+// Changes per device per local calendar day, for the activity heatmap.
+export interface ActivityDay {
+    deviceId: string | null;
+    day: number; // days since 1970-01-01 in the viewer's time zone
+    n: number;
+}
+
+export interface ChangeEntry {
+    seq: number;
+    id: string;
+    rev: number;
+    op: ChangeOp;
+    deleted: boolean;
+    size: number;
+    deviceId: string | null;
+    deviceName: string | null;
+    at: number;
+}
+
 export interface AuditEntry {
     at: number;
     actor: string;

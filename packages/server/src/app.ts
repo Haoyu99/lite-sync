@@ -6,8 +6,10 @@ import { bodyLimit } from "hono/body-limit";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { WSContext } from "hono/ws";
 import type {
+    ActivityDay,
     AuditEntry,
     BatchRequest,
+    ChangeEntry,
     ChangePage,
     DeviceSummary,
     FileEntry,
@@ -54,6 +56,8 @@ const SESSION_MAX_MS = 12 * 60 * 60_000;
 const PAIRING_TTL_MS = 10 * 60_000;
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MS = 15 * 60_000;
+const DAY_MS = 86_400_000;
+const CHANGES_PAGE = 50;
 const ID_RE = /^[0-9a-f]{64}$/;
 const PLATFORMS: Platform[] = ["macos", "windows", "linux", "ios", "android", "unknown"];
 
@@ -641,6 +645,53 @@ export function createApp(opts: AppOptions) {
         const r = db.put({ id, baseRev, deviceId: null, op: "restore" }, meta, data);
         if (r.ok) db.audit("admin", "file.restored", `${id.slice(0, 12)} → rev ${r.rev}`);
         return writeResult(c, r);
+    });
+
+    // Day buckets use the viewer's UTC offset in minutes (`tz`), so a day matches the viewer's calendar.
+    const tzOffsetMs = (c: Context) => {
+        const tz = Math.trunc(Number(c.req.query("tz") ?? 0)) || 0;
+        return Math.max(-840, Math.min(840, tz)) * 60_000;
+    };
+
+    authed.get("/activity", (c) => {
+        const off = tzOffsetMs(c);
+        const rows = db.all<{ device_id: string | null; day: number; n: number }>(
+            `SELECT device_id, CAST((at + ?) / 86400000 AS INTEGER) AS day, COUNT(*) AS n
+             FROM versions WHERE at >= ? GROUP BY device_id, day ORDER BY day`,
+            off, now() - 380 * DAY_MS
+        );
+        const days: ActivityDay[] = rows.map((r) => ({ deviceId: r.device_id ?? null, day: r.day, n: r.n }));
+        return c.json({ days });
+    });
+
+    // Newest first. Filter by device and by one local day; page with `before` (a seq).
+    authed.get("/changes", (c) => {
+        const off = tzOffsetMs(c);
+        const device = c.req.query("device") || null;
+        const dayQ = c.req.query("day") ?? "";
+        const day = /^\d{1,7}$/.test(dayQ) ? Number(dayQ) : null;
+        const before = Number(c.req.query("before")) || Number.MAX_SAFE_INTEGER;
+        const lo = day === null ? 0 : day * DAY_MS - off;
+        const hi = day === null ? Number.MAX_SAFE_INTEGER : lo + DAY_MS;
+        const rows = db.all<Record<string, unknown>>(
+            `SELECT v.seq, v.file_id, v.rev, v.op, v.deleted, v.size, v.device_id, v.at, d.name AS device_name
+             FROM versions v LEFT JOIN devices d ON d.id = v.device_id
+             WHERE v.seq < ? AND v.at >= ? AND v.at < ? AND (? IS NULL OR v.device_id = ?)
+             ORDER BY v.seq DESC LIMIT ?`,
+            before, lo, hi, device, device, CHANGES_PAGE + 1
+        );
+        const entries: ChangeEntry[] = rows.slice(0, CHANGES_PAGE).map((r) => ({
+            seq: r.seq as number,
+            id: r.file_id as string,
+            rev: r.rev as number,
+            op: r.op as ChangeEntry["op"],
+            deleted: r.deleted === 1,
+            size: r.size as number,
+            deviceId: (r.device_id as string | null) ?? null,
+            deviceName: (r.device_name as string | null) ?? null,
+            at: r.at as number,
+        }));
+        return c.json({ entries, more: rows.length > CHANGES_PAGE });
     });
 
     authed.get("/audit", (c) => {

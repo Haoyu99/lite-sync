@@ -15,6 +15,7 @@
     import { api, describe } from "../lib/api";
     import { type DiffRow, lineDiff } from "../lib/diff";
     import { bytes, downloadBlob, kindOf, splitPath, stamp } from "../lib/format";
+    import { route } from "../lib/router.svelte";
     import { session } from "../lib/session.svelte";
     import { type DecryptedFile, decryptFiles } from "../lib/vault";
 
@@ -155,6 +156,17 @@
         }
     }
 
+    // #/files/<id> opens that file; the change log on the devices page links here.
+    const routeId = $derived(/^\/files\/([0-9a-f]{64})$/.exec(route.path)?.[1] ?? null);
+    $effect(() => {
+        const id = routeId;
+        if (!id || loading || selected?.entry.id === id) return;
+        const f = files.find((x) => x.entry.id === id);
+        if (!f) return;
+        if (f.entry.deleted) showDeleted = true;
+        void open(f);
+    });
+
     const OP = { write: "写入", delete: "删除", restore: "恢复" } as const;
 </script>
 
@@ -182,7 +194,7 @@
             {:else}
                 {#each visible as f (f.entry.id)}
                     {@const sp = f.path ? splitPath(f.path) : null}
-                    <button class="file-item" class:deleted={f.entry.deleted} aria-current={selected?.entry.id === f.entry.id} onclick={() => open(f)}>
+                    <button class="file-item" class:deleted={f.entry.deleted} aria-current={selected?.entry.id === f.entry.id} onclick={() => (location.hash = `#/files/${f.entry.id}`)}>
                         <span class="name">{sp?.name ?? "无法解密"}</span>
                         <span class="dir">{sp?.dir || "/"} · {bytes(f.entry.size)} · {stamp(f.entry.updatedAt)}</span>
                     </button>
@@ -193,7 +205,7 @@
 
     <section class="detail" aria-label="文件详情">
         {#if selected}
-            <button class="btn btn-quiet btn-sm back" style="justify-self: start" onclick={() => (selected = null)}>← 返回列表</button>
+            <button class="btn btn-quiet btn-sm back" style="justify-self: start" onclick={() => ((selected = null), (location.hash = "#/files"))}>← 返回列表</button>
             <div class="stack" style="gap: 4px">
                 <h2 class="detail-title">{selected.path ? splitPath(selected.path).name : "无法解密"}</h2>
                 <p class="faint" style="font-size: 13px">

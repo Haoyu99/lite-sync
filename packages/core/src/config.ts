@@ -32,7 +32,7 @@ type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? (T[K] extends unk
 export const DEFAULT_CONFIG: SyncConfig = {
     schema: 1,
     sync: { debounceMs: 2000, configScanSeconds: 30, maxFileSizeMB: 50, massChangeGuard: 20 },
-    exclude: [".trash/**", "**/.DS_Store"],
+    exclude: [],
     obsidian: {
         // Phase 3. Off until .obsidian sync ships.
         enabled: false,

@@ -145,10 +145,13 @@ describe("PathFilter", () => {
     });
 
     it("applies user globs", () => {
-        const g = new PathFilter(["private/**", "*.log", "**/draft-*.md"]);
+        const g = new PathFilter(["private/**", "*.log", "**/draft-*.md", "/top.md", "  "]);
         assert.equal(g.accepts("private/a/b.md"), false);
+        assert.equal(g.accepts("notes/private/b.md"), true, "a pattern with / starts at the vault root");
         assert.equal(g.accepts("x.log"), false);
-        assert.equal(g.accepts("dir/x.log"), true);
+        assert.equal(g.accepts("dir/sub/x.log"), false, "a pattern without / matches in any folder");
+        assert.equal(g.accepts("top.md"), false);
+        assert.equal(g.accepts("dir/top.md"), true);
         assert.equal(g.accepts("a/b/draft-1.md"), false);
         assert.equal(g.accepts("draft-1.md"), false);
     });
