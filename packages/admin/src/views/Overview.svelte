@@ -2,6 +2,7 @@
     import { onMount } from "svelte";
     import type { ActivityDay, ChangeEntry, DeviceSummary, FileEntry, Overview, PairingCode } from "@lite-sync/core";
     import Heatmap from "../lib/Heatmap.svelte";
+    import Icon from "../lib/Icon.svelte";
     import Modal from "../lib/Modal.svelte";
     import OsIcon from "../lib/OsIcon.svelte";
     import { api, describe } from "../lib/api";
@@ -11,6 +12,7 @@
 
     const DAY_MS = 86_400_000;
     const STALE_MS = 7 * DAY_MS;
+    const ONLINE_MS = 5 * 60_000;
     const tz = -new Date().getTimezoneOffset(); // minutes east of UTC
     const localDay = (t: number) => Math.floor((t + tz * 60_000) / DAY_MS);
 
@@ -38,14 +40,14 @@
     let renameValue = $state("");
     let busy = $state(false);
 
+    async function refreshPaths() {
+        const f = await api.get<{ files: FileEntry[] }>("/files");
+        paths = pathMap(await decryptFiles(session.keys!, f.files));
+    }
+
     async function load() {
         try {
-            const [o, a, f] = await Promise.all([
-                api.get<Overview>("/overview"),
-                api.get<{ days: ActivityDay[] }>(`/activity?tz=${tz}`),
-                api.get<{ files: FileEntry[] }>("/files"),
-            ]);
-            paths = pathMap(await decryptFiles(session.keys!, f.files));
+            const [o, a] = await Promise.all([api.get<Overview>("/overview"), api.get<{ days: ActivityDay[] }>(`/activity?tz=${tz}`), refreshPaths()]);
             activity = a.days;
             data = o;
             error = "";
@@ -54,16 +56,20 @@
         }
     }
 
-    async function loadLog(append = false) {
+    // `quiet` is the background refresh: it leaves the loading state alone so nothing on screen changes until new rows arrive.
+    async function loadLog(append = false, quiet = false) {
         const req = ++logReq;
         const q = new URLSearchParams({ tz: String(tz) });
         if (device) q.set("device", device);
         if (day !== null) q.set("day", String(day));
         if (append && log.length) q.set("before", String(log.at(-1)!.seq));
-        logBusy = true;
+        if (!quiet) logBusy = true;
         try {
             const r = await api.get<{ entries: ChangeEntry[]; more: boolean }>(`/changes?${q}`);
             if (req !== logReq) return; // a newer filter replaced this request
+            // A new file can reach the log before the path list has it. Decrypt its path first, so the row never shows the file ID.
+            if (r.entries.some((e) => !paths.has(e.id))) await refreshPaths().catch(() => {});
+            if (req !== logReq) return;
             log = append ? [...log, ...r.entries] : r.entries;
             logMore = r.more;
         } catch (e) {
@@ -84,8 +90,10 @@
         const t = setInterval(() => {
             now = Date.now();
             if (pairOpen || revokeOpen || renameOpen) return;
-            void load();
-            if (log.length <= 50 && !logBusy) void loadLog();
+            // Paths first, then the log, so new rows arrive with their names.
+            void load().then(() => {
+                if (log.length <= 50 && !logBusy) void loadLog(false, true);
+            });
         }, 15_000);
         const tick = setInterval(() => (now = Date.now()), 1000);
         return () => {
@@ -118,12 +126,21 @@
         return { cls: "chip-ok", text: "已同步", ok: true };
     }
 
-    const summary = $derived.by(() => {
+    const activeCount = $derived(devices.filter((d) => !d.revokedAt).length);
+    const online = (d: DeviceSummary) => !d.revokedAt && d.lastSeenAt !== null && now - d.lastSeenAt < ONLINE_MS;
+
+    const status = $derived.by(() => {
         const active = devices.filter((d) => !d.revokedAt);
+        if (active.length === 0) return { tone: "idle", title: "还没有配对的设备", sub: "点「添加设备」获得配对码，在 Obsidian 的 lite-sync 设置里填入。" };
+        const last = Math.max(...active.map((d) => d.lastSeenAt ?? 0));
+        const seen = last ? `最近同步 ${ago(last, now)}` : "还没有设备连接过";
         const lagging = active.filter((d) => !deviceState(d).ok);
-        if (active.length === 0) return "还没有配对的设备";
-        if (lagging.length === 0) return `${active.length} 台设备，全部已同步`;
-        return `${active.length} 台设备，${lagging.map((d) => `${d.name} ${deviceState(d).text}`).join("，")}`;
+        if (lagging.length === 0) return { tone: "ok", title: `${active.length} 台设备全部已同步`, sub: seen };
+        return {
+            tone: "warn",
+            title: `${lagging.length} 台设备未同步`,
+            sub: `${lagging.map((d) => `${d.name} ${deviceState(d).text}`).join("，")} · ${seen}`,
+        };
     });
 
     function dayName(d: number): string {
@@ -197,10 +214,11 @@
 </script>
 
 <header class="page-head">
-    <div class="stack" style="gap: 4px">
+    <div class="stack" style="gap: 10px">
         <h1>设备</h1>
         {#if data}
-            <p class="summary-line">{summary}</p>
+            <p class="lede lede-{status.tone}" aria-live="polite"><span class="lede-mark" aria-hidden="true"></span>{status.title}</p>
+            <p class="lede-sub">{status.sub}</p>
         {/if}
     </div>
     <button class="btn btn-primary" onclick={newCode}>添加设备</button>
@@ -209,10 +227,17 @@
 {#if error}<p class="error">{error}</p>{/if}
 
 {#if data}
+    <dl class="figures" aria-label="概况">
+        <div><dt>设备</dt><dd>{activeCount}</dd></div>
+        <div><dt>文件</dt><dd>{data.files.toLocaleString()}</dd></div>
+        <div><dt>历史版本</dt><dd>{data.versions.toLocaleString()}</dd></div>
+        <div><dt>密文</dt><dd>{bytes(data.storageBytes)}</dd></div>
+    </dl>
+
     <section class="panel" aria-label="已配对的设备">
         {#if devices.length === 0}
             <div class="empty">
-                <p>还没有设备。点「添加设备」获得配对码，在 Obsidian 的 lite-sync 设置里填入。</p>
+                <p>添加第一台设备。配对码在 Obsidian 的 lite-sync 设置里填入。</p>
                 <button class="btn btn-primary" onclick={newCode}>添加设备</button>
             </div>
         {:else}
@@ -225,7 +250,10 @@
                     class:stale={!d.revokedAt && d.lastSeenAt !== null && now - d.lastSeenAt > STALE_MS}
                 >
                     <button class="device-main" aria-pressed={device === d.id} onclick={() => ((device = device === d.id ? null : d.id), (day = null))}>
-                        <span class="os-badge"><OsIcon platform={d.platform} size={18} /></span>
+                        <span class="os-badge">
+                            <OsIcon platform={d.platform} size={18} />
+                            {#if !d.revokedAt}<span class="dot" class:on={online(d)} title={online(d) ? "5 分钟内在线" : "离线"}></span>{/if}
+                        </span>
                         <span class="device-text">
                             <span class="device-name">{d.name}</span>
                             <span class="device-sub">{PLATFORM[d.platform]} · v{d.clientVersion} · {ago(d.lastSeenAt, now)}</span>
@@ -237,7 +265,7 @@
                         <span></span>
                     {:else}
                         <details class="menu">
-                            <summary class="btn btn-quiet btn-sm" aria-label="更多操作">⋯</summary>
+                            <summary class="btn btn-quiet btn-sm" aria-label="更多操作"><Icon name="more" /></summary>
                             <div class="menu-pop">
                                 <button class="btn btn-quiet btn-sm" onclick={(e) => (closeMenu(e), (renameTarget = d), (renameValue = d.name), (renameOpen = true))}>改名</button>
                                 <button class="btn btn-quiet btn-sm btn-danger" onclick={(e) => (closeMenu(e), (revokeTarget = d), (revokeOpen = true))}>吊销</button>
@@ -255,11 +283,6 @@
                 {#if selected}<span class="title-os"><OsIcon platform={selected.platform} size={14} /></span>{/if}
                 {selected?.name ?? "全部设备"} · 近一年 {yearTotal.toLocaleString()} 次修改
             </h2>
-            <span class="facts">
-                <span><b>{data.files.toLocaleString()}</b>个文件</span>
-                <span><b>{data.versions.toLocaleString()}</b>个历史版本</span>
-                <span><b>{bytes(data.storageBytes)}</b>密文</span>
-            </span>
         </div>
         <div class="panel-body">
             <Heatmap {counts} {today} selected={day} onSelect={(d) => (day = day === d ? null : d)} />
@@ -272,11 +295,11 @@
             <div class="row">
                 {#if selected}
                     <button class="filter" onclick={() => (device = null)} aria-label="取消设备筛选">
-                        <OsIcon platform={selected.platform} size={12} />{selected.name}<span aria-hidden="true">✕</span>
+                        <OsIcon platform={selected.platform} size={12} />{selected.name}<Icon name="x" size={12} />
                     </button>
                 {/if}
                 {#if day !== null}
-                    <button class="filter" onclick={() => (day = null)} aria-label="取消日期筛选">{dayName(day)}<span aria-hidden="true">✕</span></button>
+                    <button class="filter" onclick={() => (day = null)} aria-label="取消日期筛选">{dayName(day)}<Icon name="x" size={12} /></button>
                 {/if}
             </div>
         </div>

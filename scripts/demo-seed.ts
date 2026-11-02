@@ -25,16 +25,21 @@ const [base, setupToken] = process.argv.slice(2).filter((a) => a !== "--");
 if (!base || !setupToken) throw new Error("usage: demo-seed.ts <base-url> <setup-token>");
 
 const PASSPHRASE = "河马-台灯-雨伞-星期三-菠萝";
-let cookie = "";
+// The server can set the session and trusted-browser cookies in one response, so keep every cookie by name.
+const jar = new Map<string, string>();
 
 async function admin<T>(path: string, body?: unknown): Promise<T> {
+    const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
     const res = await fetch(base + "/admin/api" + path, {
         method: body === undefined ? "GET" : "POST",
         headers: { "x-lite-sync": "1", "content-type": "application/json", cookie },
         body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const set = res.headers.get("set-cookie");
-    if (set) cookie = set.split(";")[0]!;
+    for (const set of res.headers.getSetCookie()) {
+        const pair = set.split(";")[0]!;
+        const i = pair.indexOf("=");
+        if (i > 0) jar.set(pair.slice(0, i), pair.slice(i + 1));
+    }
     if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
     return (await res.json()) as T;
 }

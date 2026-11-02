@@ -21,20 +21,18 @@
 </script>
 
 <div class="app">
-    <header class="topbar">
-        <div class="topbar-inner">
-            <span class="wordmark">lite-sync</span>
-            <nav class="nav" aria-label="主导航">
-                {#each NAV as n (n.path)}
-                    <a href="#{n.path}" aria-current={section === n.path ? "page" : undefined}>{n.label}</a>
-                {/each}
-            </nav>
-            <div class="topbar-end">
-                <span class="lock-state" title="解锁有效期 7 天，可在设置中撤销浏览器信任">已解锁</span>
-                <button class="btn btn-quiet btn-sm" onclick={onSignOut}>退出</button>
-            </div>
+    <aside class="sidebar">
+        <span class="wordmark">lite-sync</span>
+        <nav class="nav" aria-label="主导航">
+            {#each NAV as n (n.path)}
+                <a href="#{n.path}" aria-current={section === n.path ? "page" : undefined}>{n.label}</a>
+            {/each}
+        </nav>
+        <div class="sidebar-end">
+            <span class="lock-state" title="解锁有效期 7 天，可在设置中撤销浏览器信任">已解锁</span>
+            <button class="btn btn-quiet btn-sm" onclick={onSignOut}>退出</button>
         </div>
-    </header>
+    </aside>
     <main class="main">
         {#if session.cacheWarning}<p class="notice" role="status">{session.cacheWarning}</p>{/if}
         {#if section === "/files"}

@@ -64,7 +64,10 @@
 <div class="gate">
     <div class="gate-card">
         <aside class="gate-aside">
-            <span class="wordmark">lite-sync</span>
+            <div class="gate-brand">
+                <span class="wordmark">lite-sync</span>
+                <p class="gate-tag">端到端加密的 Obsidian 同步。笔记在设备上加密，服务器只保存密文。</p>
+            </div>
             <Custody />
         </aside>
         <form class="gate-main" onsubmit={submit}>
