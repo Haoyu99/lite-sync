@@ -140,7 +140,7 @@ describe("PathFilter", () => {
     });
 
     it("rejects the config folder, trash, system files, and unsafe paths", () => {
-        for (const p of [".obsidian/app.json", ".trash/a.md", "a/.DS_Store", "~$doc.docx", "../x.md", "/abs.md", "a//b.md", ""])
+        for (const p of [".obsidian/app.json", ".obsidian/plugins/lite-sync/data.json", ".obsidian/plugins/calendar/data.json", ".trash/a.md", "a/.DS_Store", "~$doc.docx", "../x.md", "/abs.md", "a//b.md", ""])
             assert.equal(f.accepts(p), false, p);
     });
 

@@ -22,11 +22,18 @@ import {
     fromB64,
     toB64,
     unwrapMasterKey,
+    seal,
+    utf8,
+    pluginInventoryAad,
 } from "@lite-sync/core";
 import { Api, ApiError, type Http, normaliseBaseUrl } from "./api.ts";
 import { type LocalFile, type StateStore, type SyncState, type SyncStatus, SyncEngine, type VaultAdapter } from "./engine.ts";
 
-const VERSION = "0.1.0";
+import { PluginSync, type PluginSyncState } from "./plugin-sync.ts";
+import { PluginFiles, type PluginRuntime } from "./plugin-files.ts";
+import { collectPlugins } from "./plugins.ts";
+
+const VERSION = "0.2.0";
 const MK_STORAGE_KEY = "lite-sync-mk";
 
 interface Settings {
@@ -137,6 +144,27 @@ class IdbStore implements StateStore {
             tx.onerror = () => reject(tx.error);
         });
     }
+    async loadPlugins(): Promise<PluginSyncState | null> {
+        const db = await this.db();
+        try {
+            return await new Promise((resolve, reject) => {
+                const request = db.transaction("kv").objectStore("kv").get("plugins");
+                request.onsuccess = () => resolve(request.result ?? null);
+                request.onerror = () => reject(request.error);
+            });
+        } finally { db.close(); }
+    }
+    async savePlugins(state: PluginSyncState): Promise<void> {
+        const db = await this.db();
+        try {
+            await new Promise<void>((resolve, reject) => {
+                const tx = db.transaction("kv", "readwrite");
+                tx.objectStore("kv").put(state, "plugins");
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        } finally { db.close(); }
+    }
     async clear(): Promise<void> {
         await new Promise<void>((resolve) => {
             const req = indexedDB.deleteDatabase(this.name);
@@ -164,6 +192,17 @@ export default class LiteSyncPlugin extends Plugin {
     private wsRetry = 0;
     private wsTimer: number | null = null;
     private lastEdit = new Map<string, number>();
+    private progressNotice: Notice | null = null;
+    private noticeAt = 0;
+    private firstSyncComplete = false;
+    private inventoryBusy = false;
+    private pluginSync: PluginSync | null = null;
+    private pluginNotice: Notice | null = null;
+    private syncRunning: Promise<void> | null = null;
+    private syncAgain = false;
+    private lastScan = 0;
+    private pluginProblem = "";
+    private inventoryJson = "";
     private logLines: string[] = [];
 
     async onload() {
@@ -177,15 +216,17 @@ export default class LiteSyncPlugin extends Plugin {
         this.renderStatus();
 
         this.addSettingTab(new LiteSyncSettingTab(this.app, this));
-        this.addCommand({ id: "sync-now", name: "立即同步", callback: () => void this.engine?.sync() });
+        this.addCommand({ id: "sync-now", name: "立即同步", callback: () => void this.syncAll() });
         this.addCommand({ id: "confirm-mass-change", name: "确认大批量删除或覆盖", callback: () => this.confirmMassChange() });
         this.addCommand({ id: "show-log", name: "显示同步日志", callback: () => this.showLog() });
 
         // Registered once here, because start() runs again after unlocking or re-pairing.
-        this.registerInterval(window.setInterval(() => void this.engine?.sync(), 60_000));
+        this.registerInterval(window.setInterval(() => {
+            if (Date.now() - this.lastScan >= (this.engine?.settings.sync.configScanSeconds ?? 30) * 1000) void this.syncAll();
+        }, 5000));
         this.registerDomEvent(document, "visibilitychange", () => {
             if (document.visibilityState !== "visible" || !this.engine) return;
-            void this.engine.sync();
+            void this.syncAll();
             if (!this.ws) this.connectSocket();
         });
 
@@ -196,6 +237,10 @@ export default class LiteSyncPlugin extends Plugin {
     }
 
     onunload() {
+        this.engine = null;
+        this.pluginSync = null;
+        this.pluginNotice?.hide();
+        this.progressNotice?.hide();
         this.stopSocket();
         if (this.debounce) window.clearTimeout(this.debounce);
     }
@@ -227,6 +272,11 @@ export default class LiteSyncPlugin extends Plugin {
     async start() {
         this.stopSocket();
         this.engine = null;
+        this.pluginSync = null;
+        this.pluginNotice?.hide();
+        this.pluginNotice = null;
+        this.progressNotice?.hide();
+        this.progressNotice = null;
         const mk = this.app.loadLocalStorage(MK_STORAGE_KEY) as string | null;
         if (!this.paired || !mk) return this.renderStatus();
         let keys: VaultKeys;
@@ -236,6 +286,9 @@ export default class LiteSyncPlugin extends Plugin {
             this.app.saveLocalStorage(MK_STORAGE_KEY, null);
             return this.renderStatus();
         }
+        this.firstSyncComplete = false;
+        this.pluginProblem = "";
+        this.inventoryJson = "";
         this.engine = new SyncEngine({
             api: this.api(),
             keys,
@@ -246,17 +299,104 @@ export default class LiteSyncPlugin extends Plugin {
             mobile: Platform.isMobile,
             isBusy: (p) => this.isBusy(p),
             log: (m) => this.log(m),
-            onStatus: (s) => this.onStatus(s),
+            onStatus: (s) => { if (this.engine?.status === s) this.onStatus(s); },
+        });
+        // Plugin lifecycle operations are isolated behind a checked compatibility boundary.
+        // Obsidian exposes this manager at runtime; it is not part of the public App typings.
+        const manager = (this.app as unknown as { plugins?: {
+            plugins: Record<string, unknown>;
+            unloadPlugin?: (id: string) => Promise<void>;
+            loadPlugin?: (id: string) => Promise<void>;
+            loadManifests?: () => Promise<void>;
+        } }).plugins;
+        const runtime: PluginRuntime = {
+            loaded: (id) => {
+                if (!manager?.plugins) throw new Error("当前 Obsidian 不支持安全安装插件");
+                return !!manager.plugins[id];
+            },
+            pause: async (id) => {
+                if (!manager?.unloadPlugin || !manager?.loadPlugin) throw new Error("当前 Obsidian 无法安全重载插件，请先停用要更新的插件后重试");
+                await manager.unloadPlugin(id);
+            },
+            resume: async (id) => {
+                await manager?.loadManifests?.();
+                await manager?.loadPlugin?.(id);
+            },
+        };
+        const pluginFiles = new PluginFiles(this.app.vault.adapter, this.app.vault.configDir, runtime);
+        try { await pluginFiles.recover(); }
+        catch (e) { this.log(String(e)); new Notice(`lite-sync: ${String(e)}`, 10000); return; }
+        this.pluginSync = new PluginSync({
+            api: this.api(), keys, deviceId: this.settings.deviceId, mobile: Platform.isMobile,
+            host: pluginFiles, load: () => this.store!.loadPlugins(), save: (state) => this.store!.savePlugins(state),
+            progress: (message) => {
+                if (!this.pluginNotice) this.pluginNotice = new Notice(`lite-sync: ${message}`, 0);
+                else this.pluginNotice.setMessage(`lite-sync: ${message}`);
+                this.statusEl?.setText(`⟳ ${message}`);
+            },
+            log: (message) => this.log(message),
         });
         this.connectSocket();
-        void this.engine.sync();
+        void this.syncAll();
+    }
+
+    syncAll(): Promise<void> {
+        if (this.syncRunning) { this.syncAgain = true; return this.syncRunning; }
+        this.syncRunning = (async () => {
+            do {
+                this.syncAgain = false;
+                this.lastScan = Date.now();
+                const engine = this.engine;
+                const plugins = this.pluginSync;
+                if (!engine) return;
+                await engine.sync();
+                if (this.engine !== engine) continue;
+                if (plugins && ["idle", "needs-confirm"].includes(engine.status.phase)) {
+                    try {
+                        const result = await plugins.sync(engine.settings);
+                        this.pluginProblem = result.waiting ? "插件同步等待首台设备或并发修改，下次重试" : "";
+                        if (result.uploaded || result.applied) new Notice(`lite-sync: 插件${result.waiting ? "本轮已处理" : "同步完成"} · 上传 ${result.uploaded}，安装 / 更新 ${result.applied}${result.conflicts ? `，${result.conflicts} 处冲突已备份` : ""}。新插件请在本机设置中启用。`, 7000);
+                        if (result.waiting) this.log("插件同步等待初始化或并发修改，下次重试");
+                    } catch (e) {
+                        this.pluginProblem = `插件同步未完成: ${String(e)}`;
+                        this.log(`插件同步出错: ${String(e)}`);
+                        new Notice(`lite-sync: 插件同步未完成 · ${String(e)}`, 8000);
+                    } finally {
+                        this.pluginNotice?.hide(); this.pluginNotice = null; this.renderStatus();
+                    }
+                }
+                await this.reportPlugins();
+            } while (this.syncAgain);
+        })().finally(() => { this.syncRunning = null; });
+        return this.syncRunning;
+    }
+
+    private async reportPlugins() {
+        if (!this.engine || this.inventoryBusy) return;
+        this.inventoryBusy = true;
+        const deviceId = this.settings.deviceId;
+        const engine = this.engine;
+        try {
+            const json = JSON.stringify(await collectPlugins(this.app.vault.adapter, this.app.vault.configDir));
+            if (json === this.inventoryJson) return;
+            const mk = this.app.loadLocalStorage(MK_STORAGE_KEY) as string;
+            const keys = await deriveVaultKeys(fromB64(mk));
+            const blob = toB64(await seal(keys.config, utf8(json), pluginInventoryAad(deviceId)));
+            if (this.engine !== engine || this.settings.deviceId !== deviceId) return;
+            await this.api().reportPlugins(blob);
+            if (this.engine === engine) this.inventoryJson = json;
+        } catch (e) {
+            this.log(`插件清单暂未更新，下次重试: ${String(e)}`);
+        } finally {
+            this.inventoryBusy = false;
+        }
     }
 
     private registerVaultEvents() {
         const schedule = () => {
             if (!this.engine) return;
             if (this.debounce) window.clearTimeout(this.debounce);
-            this.debounce = window.setTimeout(() => void this.engine?.sync(), this.engine.settings.sync.debounceMs);
+            this.debounce = window.setTimeout(() => void this.syncAll(), this.engine.settings.sync.debounceMs);
         };
         this.registerEvent(this.app.vault.on("create", (f) => f instanceof TFile && schedule()));
         this.registerEvent(this.app.vault.on("modify", (f) => f instanceof TFile && schedule()));
@@ -301,7 +441,7 @@ export default class LiteSyncPlugin extends Plugin {
             try {
                 const msg = JSON.parse(String(ev.data)) as { head?: number; config?: number };
                 if ((msg.head !== undefined && this.engine && msg.head > this.engine.cursor) || msg.config !== undefined)
-                    void this.engine?.sync();
+                    void this.syncAll();
             } catch {
                 /* ignore malformed messages */
             }
@@ -331,7 +471,33 @@ export default class LiteSyncPlugin extends Plugin {
 
     private onStatus(s: SyncStatus) {
         this.renderStatus();
+        if (s.phase === "syncing") {
+            const hasWork = !this.firstSyncComplete || !!(s.uploaded + s.downloaded + s.updated + s.deleted) || !!s.progress?.path;
+            // A single updating notice also makes progress visible on mobile.
+            if (hasWork && (!this.firstSyncComplete || s.progress?.action !== "正在检查")) {
+                if (!this.progressNotice) this.progressNotice = new Notice("lite-sync: 正在同步…", 0);
+                if (Date.now() - this.noticeAt > 100) {
+                    this.progressNotice.setMessage(`lite-sync: ${this.progressText(s)}`);
+                    this.noticeAt = Date.now();
+                }
+            }
+        } else {
+            this.progressNotice?.hide();
+            this.progressNotice = null;
+            if (s.phase === "idle" && s.pending === 0 && s.skipped === 0) {
+                if (!this.firstSyncComplete || s.uploaded + s.downloaded + s.updated + s.deleted > 0) {
+                    new Notice(`lite-sync: 文件同步完成 · 上传 ${s.uploaded}，下载 ${s.downloaded}，更新 ${s.updated}，删除 ${s.deleted}`, 5000);
+                }
+                this.firstSyncComplete = true;
+            } else if (s.skipped > 0) new Notice(`lite-sync: ${s.skipped} 个文件无法解密或校验，详情见同步日志`, 8000);
+        }
         if (s.phase === "revoked") this.stopSocket();
+    }
+
+    private progressText(s: SyncStatus): string {
+        const p = s.progress;
+        if (!p) return "正在同步…";
+        return `${p.action}${p.total ? ` ${p.completed}/${p.total}` : ""}${p.path ? ` · ${p.path}` : ""}`;
     }
 
     renderStatus() {
@@ -339,18 +505,19 @@ export default class LiteSyncPlugin extends Plugin {
         if (!this.paired) return void this.statusEl.setText("lite-sync: 未配对");
         if (!this.engine) return void this.statusEl.setText("lite-sync: 未解锁");
         const s = this.engine.status;
-        let text = PHASE_LABEL[s.phase];
+        let text = s.phase === "syncing" ? `⟳ ${this.progressText(s)}` : s.phase === "idle" && s.pending ? "⏳ 等待同步" : PHASE_LABEL[s.phase];
         if (s.pending > 0 && s.phase !== "syncing") text += ` ↑${s.pending}`;
         if (s.conflicts.length > 0) text += ` · ${s.conflicts.length} 个冲突副本`;
+        if (s.phase !== "syncing" && this.pluginProblem) text += " · ⚠ 插件待同步";
         this.statusEl.setText(text);
-        this.statusEl.setAttr("aria-label", s.message ?? (s.lastSyncAt ? `上次同步 ${new Date(s.lastSyncAt).toLocaleTimeString()}` : ""));
+        this.statusEl.setAttr("aria-label", this.pluginProblem || s.message || (s.lastSyncAt ? `上次同步 ${new Date(s.lastSyncAt).toLocaleTimeString()}` : ""));
     }
 
     private onStatusClick() {
         const s = this.engine?.status;
         if (s?.phase === "needs-confirm") return this.confirmMassChange();
-        if (s?.message) new Notice(`lite-sync: ${s.message}`);
-        void this.engine?.sync();
+        if (this.pluginProblem || s?.message) new Notice(`lite-sync: ${this.pluginProblem || s?.message}`);
+        void this.syncAll();
     }
 
     confirmMassChange() {
@@ -358,7 +525,7 @@ export default class LiteSyncPlugin extends Plugin {
         if (!s || s.phase !== "needs-confirm") return void new Notice("lite-sync: 没有等待确认的变更");
         new ConfirmModal(this.app, `其他设备的同步将删除或覆盖本机 ${s.guardCount} 个未修改的文件。服务器保留所有历史版本，可以在后台恢复。继续吗？`, () => {
             this.engine?.confirmMassChange();
-            void this.engine?.sync();
+            void this.syncAll();
         }).open();
     }
 
@@ -372,6 +539,11 @@ export default class LiteSyncPlugin extends Plugin {
         // A master key or sync index left from an earlier pairing belongs to another vault or server.
         this.stopSocket();
         this.engine = null;
+        this.pluginSync = null;
+        this.pluginNotice?.hide();
+        this.pluginNotice = null;
+        this.progressNotice?.hide();
+        this.progressNotice = null;
         this.app.saveLocalStorage(MK_STORAGE_KEY, null);
         await this.store?.clear();
         const res = await Api.pair(http, this.settings.serverUrl, {
@@ -396,6 +568,11 @@ export default class LiteSyncPlugin extends Plugin {
     async unpair() {
         this.stopSocket();
         this.engine = null;
+        this.pluginSync = null;
+        this.pluginNotice?.hide();
+        this.pluginNotice = null;
+        this.progressNotice?.hide();
+        this.progressNotice = null;
         this.app.saveLocalStorage(MK_STORAGE_KEY, null);
         await this.store?.clear();
         this.settings = { ...DEFAULT_SETTINGS, deviceName: this.settings.deviceName, serverUrl: this.settings.serverUrl };
@@ -544,10 +721,10 @@ class LiteSyncSettingTab extends PluginSettingTab {
             .setName("状态")
             .setDesc(
                 s
-                    ? `${PHASE_LABEL[s.phase]}${s.pending ? `，${s.pending} 个待上传` : ""}${s.lastSyncAt ? `，上次同步 ${new Date(s.lastSyncAt).toLocaleString()}` : ""}${s.message ? `。${s.message}` : ""}`
+                    ? `${PHASE_LABEL[s.phase]}${s.pending ? `，${s.pending} 个待同步` : ""}${s.lastSyncAt ? `，上次同步 ${new Date(s.lastSyncAt).toLocaleString()}` : ""}${s.message ? `。${s.message}` : ""}`
                     : "未启动"
             )
-            .addButton((b) => b.setButtonText("立即同步").setCta().onClick(() => void run(b, async () => p.engine?.sync())))
+            .addButton((b) => b.setButtonText("立即同步").setCta().onClick(() => void run(b, async () => p.syncAll())))
             .addButton((b) => b.setButtonText("日志").onClick(() => p.showLog()));
         if (s?.phase === "needs-confirm")
             new Setting(el)
@@ -567,7 +744,7 @@ class LiteSyncSettingTab extends PluginSettingTab {
                 b.setButtonText("重新检查").onClick(() =>
                     void run(b, async () => {
                         await p.engine?.rescan();
-                        await p.engine?.sync();
+                        await p.syncAll();
                     }, "已完成重新检查")
                 )
             );

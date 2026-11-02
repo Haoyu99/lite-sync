@@ -1,8 +1,9 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import type { PreloginResponse } from "@lite-sync/core";
+    import { deriveVaultKeys, type PreloginResponse } from "@lite-sync/core";
     import { ApiError, api, describe } from "./lib/api";
     import { replace, route } from "./lib/router.svelte";
+    import { restoreUnlock } from "./lib/unlock-cache";
     import { lock, session } from "./lib/session.svelte";
     import Enrol from "./views/Enrol.svelte";
     import Login from "./views/Login.svelte";
@@ -11,13 +12,13 @@
 
     type Stage = "loading" | "uninitialised" | "setup" | "login" | "unlock" | "enrol" | "app" | "error";
 
-    const IDLE_MS = 30 * 60_000;
 
     let stage = $state<Stage>("loading");
     let pre = $state<PreloginResponse>({ initialised: false });
     let wrappedMk = $state("");
     let setupToken = $state("");
     let error = $state("");
+    let authChannel: BroadcastChannel | null = null;
 
     async function boot() {
         try {
@@ -30,13 +31,20 @@
             }
             if (token) replace("/");
             try {
-                const s = await api.get<{ wrappedMk: string; totpEnabled: boolean; recoveryCodesLeft: number }>("/session");
+                const s = await api.get<{ wrappedMk: string; totpEnabled: boolean; recoveryCodesLeft: number; expiresAt: number; sessionTag: string }>("/session");
                 wrappedMk = s.wrappedMk;
                 session.totpEnabled = s.totpEnabled;
                 session.recoveryLeft = s.recoveryCodesLeft;
-                stage = "unlock";
+                session.expiresAt = s.expiresAt;
+                session.sessionTag = s.sessionTag;
+                const mk = await restoreUnlock(s.wrappedMk, s.sessionTag);
+                if (mk) {
+                    session.mk = mk;
+                    session.keys = await deriveVaultKeys(mk);
+                    stage = "app";
+                } else stage = "unlock";
             } catch (e) {
-                if (e instanceof ApiError && e.status === 401) stage = "login";
+                if (e instanceof ApiError && e.status === 401) { lock(); stage = "login"; }
                 else throw e;
             }
         } catch (e) {
@@ -53,25 +61,30 @@
     }
 
     async function signOut() {
+        authChannel?.postMessage("locked");
         await api.post("/logout").catch(() => {});
         await toLogin();
     }
 
     onMount(() => {
         void boot();
-        let last = Date.now();
-        const bump = () => (last = Date.now());
-        const events = ["pointerdown", "keydown", "wheel", "touchstart"] as const;
-        for (const ev of events) window.addEventListener(ev, bump, { passive: true });
-        const expired = () => void toLogin();
+        authChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("lite-sync-auth") : null;
+        if (authChannel) authChannel.onmessage = () => void toLogin();
+        const expired = () => { authChannel?.postMessage("locked"); void toLogin(); };
         window.addEventListener("lite-sync:expired", expired);
         const timer = setInterval(() => {
-            if (session.keys && Date.now() - last > IDLE_MS) void signOut();
+            if (session.keys && Date.now() >= session.expiresAt) void signOut();
         }, 30_000);
+        const focus = () => { if (session.keys && Date.now() >= session.expiresAt) void signOut(); };
+        window.addEventListener("focus", focus);
+        document.addEventListener("visibilitychange", focus);
         return () => {
+            authChannel?.close();
             clearInterval(timer);
+            window.removeEventListener("focus", focus);
+            document.removeEventListener("visibilitychange", focus);
             window.removeEventListener("lite-sync:expired", expired);
-            for (const ev of events) window.removeEventListener(ev, bump);
+
         };
     });
 </script>
@@ -102,7 +115,7 @@
 {:else if stage === "setup"}
     <Setup token={setupToken} onDone={() => (stage = "enrol")} />
 {:else if stage === "login" || stage === "unlock"}
-    <Login salt={pre.salt ?? ""} kdf={pre.kdf!} totp={!!pre.totp} mode={stage} {wrappedMk} onDone={() => (stage = "app")} />
+    <Login salt={pre.salt ?? ""} kdf={pre.kdf!} totp={!!pre.totp} trusted={!!pre.trusted} mode={stage} {wrappedMk} onDone={() => (stage = "app")} />
 {:else if stage === "enrol"}
     <Enrol onDone={() => (stage = "app")} onSkip={() => (stage = "app")} />
 {:else}

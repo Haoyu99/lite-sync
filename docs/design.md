@@ -1,6 +1,6 @@
 # lite-sync 设计
 
-状态：草案，2026-10-30
+状态：原始设计草案；0.2.0 的已实现规则及覆盖项见 [plugin-sync.md](plugin-sync.md)。
 
 全流程的通俗说明见 [flow.md](flow.md)。两者不一致时以本文为准。
 
@@ -282,10 +282,9 @@
 
 ## 10. `.obsidian` 同步
 
-- 同步：`appearance.json`、`themes/`、`snippets/`、`hotkeys.json`、`core-plugins.json`、`community-plugins.json`、`plugins/*/{main.js,manifest.json,styles.css,data.json}`，以及其他核心插件的配置文件。
-- 始终排除：`workspace.json`、`workspace-mobile.json`、`plugins/lite-sync/`、`plugins/obsidian-livesync/`。
-- 插件代码变化后，提示重新加载 Obsidian。
-- 可以按平台覆盖配置，比如手机端不同步快捷键。
+0.2.0 实现社区插件标准文件及配置同步，首次设备建立插件基准。启用状态、快捷键和卸载操作保持本机独立；lite-sync 和 LiveSync 始终排除。其他配置、主题及外观仍为规划项。
+
+插件包使用独立通道和完整加密版本，具体初始化、冲突、应用与恢复规则以 [plugin-sync.md](plugin-sync.md) 为准。
 
 ## 11. 统一配置
 
@@ -297,8 +296,8 @@
   "sync": { "debounceMs": 2000, "configScanSeconds": 30, "maxFileSizeMB": 50, "massChangeGuard": 20 },
   "exclude": [],
   "obsidian": {
-    "appearance": true, "themes": true, "snippets": true, "hotkeys": true,
-    "corePlugins": true, "communityPlugins": true, "pluginData": true,
+    "enabled": true, "appearance": false, "themes": false, "snippets": false, "hotkeys": false,
+    "corePlugins": false, "communityPlugins": true, "pluginData": true,
     "excludePlugins": ["obsidian-livesync"]
   },
   "overrides": { "mobile": { "obsidian": { "hotkeys": false } } },
@@ -306,13 +305,12 @@
 }
 ```
 
-## 12. 兼容与升级
+## 12. 当前测试阶段的约定
 
-- 三处版本号从第一天固定：密文格式字节、API 路径 `/v1`、配置 `schema`。
-- 新客户端必须能读取所有旧格式。服务器继续支持旧客户端。
-- 客户端遇到不认识的格式时，跳过对应文件并报告，不删除也不覆盖任何内容。
-- 服务器可以声明最低客户端版本。低于该版本的客户端进入只读模式并提示更新。
-- 设备之间唯一需要一致的是主密钥。
+- 当前只有开发者自己测试功能，暂不要求旧客户端、旧协议、旧配置或旧数据库兼容。
+- 根据当前功能直接修改结构；必要时可以清空测试服务端数据并重新初始化，不维护历史迁移分支。
+- 正常启动和重启不得自动清空数据；清空重建只在需要调整或重新测试时执行。
+- 面向真实用户发布前，再单独设计稳定协议和兼容策略。
 
 ## 13. 安装与更新
 

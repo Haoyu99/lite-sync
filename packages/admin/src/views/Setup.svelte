@@ -12,6 +12,7 @@
     import Custody from "../lib/Custody.svelte";
     import { api, describe } from "../lib/api";
     import { replace } from "../lib/router.svelte";
+    import { rememberUnlock } from "../lib/unlock-cache";
     import { session } from "../lib/session.svelte";
 
     let { token, onDone }: { token: string; onDone: () => void } = $props();
@@ -31,17 +32,24 @@
             const salt = randomBytes(16);
             const pk = await derivePassphraseKeys(pass, salt, DEFAULT_KDF);
             const mk = newMasterKey();
+            const wrappedMk = await wrapMasterKey(pk.kek, mk);
             await api.post("/setup", {
                 setupToken: token,
                 salt: toB64(salt),
                 kdf: DEFAULT_KDF,
                 loginKey: pk.loginKey,
-                wrappedMk: await wrapMasterKey(pk.kek, mk),
+                wrappedMk,
                 mkProof: await masterKeyProof(mk),
             });
             session.mk = mk;
             session.keys = await deriveVaultKeys(mk);
             session.totpEnabled = false;
+            const active = await api.get<{ sessionTag: string; expiresAt: number }>("/session");
+            session.expiresAt = active.expiresAt;
+            session.sessionTag = active.sessionTag;
+            await rememberUnlock(mk, wrappedMk, active.sessionTag, active.expiresAt).catch(() => {
+                session.cacheWarning = "此浏览器无法保存解锁状态，刷新后需要重新输入口令。";
+            });
             pass = pass2 = "";
             replace("/");
             onDone();

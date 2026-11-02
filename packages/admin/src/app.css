@@ -1474,3 +1474,31 @@ select {
         transition: none !important;
     }
 }
+
+.folder-item {
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ink);
+    text-align: left;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+.folder-item:hover { background: var(--hover); }
+.plugin-tools { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; padding: 16px; }
+.plugin-tools .field { flex: 1; min-width: 160px; }
+.plugin-tools .check { padding-bottom: 10px; }
+.plugin-table-wrap { overflow-x: auto; }
+.plugin-table td { overflow-wrap: anywhere; }
+@media (max-width: 860px) {
+    .plugin-table th:nth-child(2), .plugin-table td:nth-child(2) { display: table-cell; }
+    .topbar-inner { flex-wrap: wrap; }
+    .topbar .nav { gap: 0; }
+    .topbar .nav a { padding-left: 9px; padding-right: 9px; }
+}

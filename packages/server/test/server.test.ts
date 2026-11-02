@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, mock } from "node:test";
 import { ServerKey, currentStep, totpAt } from "../src/auth.ts";
 import { createApp, issueSetupToken, reset2fa } from "../src/app.ts";
 import { Db } from "../src/db.ts";
@@ -31,8 +31,12 @@ describe("server", () => {
             ...init,
             headers: { "x-lite-sync": "1", "content-type": "application/json", cookie, ...(init.headers ?? {}) },
         });
-        const set = res.headers.get("set-cookie");
-        if (set) cookie = set.split(";")[0]!;
+        const jar = new Map(cookie.split("; ").filter(Boolean).map((part) => { const i = part.indexOf("="); return [part.slice(0, i), part.slice(i + 1)]; }));
+        for (const set of res.headers.getSetCookie()) {
+            const pair = set.split(";")[0]!; const i = pair.indexOf("=");
+            jar.set(pair.slice(0, i), pair.slice(i + 1));
+        }
+        cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
         return res;
     };
     const dev = (path: string, init: RequestInit = {}, t = token) =>
@@ -46,11 +50,13 @@ describe("server", () => {
     };
 
     before(() => {
+        mock.method(Date, "now", () => clock);
         dir = mkdtempSync(join(tmpdir(), "lite-sync-test-"));
         db = new Db(dir);
         ({ app } = createApp({ db, serverKey: new ServerKey("x".repeat(40)), insecureCookies: true, now: () => clock }));
     });
     after(() => {
+        mock.restoreAll();
         db.sql.close();
         rmSync(dir, { recursive: true, force: true });
     });
@@ -99,17 +105,24 @@ describe("server", () => {
         const r = await admin("/login", { method: "POST", body: JSON.stringify({ loginKey: LOGIN_KEY, totp: code }) });
         assert.equal(r.status, 200);
         assert.equal((await r.json()).wrappedMk, WRAPPED);
+        const savedCookie = cookie;
+        cookie = "";
         const replay = await admin("/login", { method: "POST", body: JSON.stringify({ loginKey: LOGIN_KEY, totp: code }) });
         assert.equal(replay.status, 403);
+        cookie = savedCookie;
         assert.equal((await admin("/overview")).status, 200);
     });
 
     it("accepts a recovery code once", async () => {
+        cookie = "";
         const body = JSON.stringify({ loginKey: LOGIN_KEY, recoveryCode: recoveryCodes[0] });
         const r = await admin("/login", { method: "POST", body });
         assert.equal(r.status, 200);
         assert.equal((await r.json()).recoveryCodesLeft, 9);
+        const savedCookie = cookie;
+        cookie = "";
         assert.equal((await admin("/login", { method: "POST", body })).status, 403);
+        cookie = savedCookie;
     });
 
     it("locks login after repeated failures", async () => {
@@ -136,6 +149,20 @@ describe("server", () => {
         const vault = await (await dev("/vault")).json();
         assert.equal(vault.wrappedMk, WRAPPED);
         assert.equal((await dev("/vault", {}, "bogus")).status, 401);
+    });
+
+    it("stores encrypted plugin reports without changing schema or file history", async () => {
+        const head = db.head();
+        const schema = db.all("SELECT name, sql FROM sqlite_schema ORDER BY name");
+        const body = JSON.stringify({ blob: WRAPPED, deviceId: "someone-else" });
+        assert.equal((await dev("/plugins", { method: "PUT", body }, "bogus")).status, 401);
+        assert.equal((await dev("/plugins", { method: "PUT", body: JSON.stringify({ blob: "plaintext!" }) })).status, 400);
+        assert.equal((await dev("/plugins", { method: "PUT", body })).status, 200);
+        const reports = (await (await admin("/plugins")).json()).reports;
+        assert.deepEqual(reports, [{ deviceId, deviceName: "Mac", updatedAt: clock, blob: WRAPPED }]);
+        assert.equal(db.head(), head);
+        assert.deepEqual(db.all("SELECT name, sql FROM sqlite_schema ORDER BY name"), schema);
+        assert.equal((await app.request("/admin/api/plugins", { headers: { "x-lite-sync": "1" } })).status, 401);
     });
 
     it("rejects pairing codes after they expire", async () => {
@@ -245,6 +272,8 @@ describe("server", () => {
         assert.equal(overview.devices.length, 1);
         assert.equal((await admin(`/devices/${deviceId}/revoke`, { method: "POST" })).status, 200);
         assert.equal((await put(9, 0)).status, 401);
+        assert.equal((await dev("/plugins", { method: "PUT", body: JSON.stringify({ blob: WRAPPED }) })).status, 401);
+        assert.deepEqual((await (await admin("/plugins")).json()).reports, []);
     });
 
     it("lets reset-2fa fall back to passphrase-only login until re-enrolment", async () => {

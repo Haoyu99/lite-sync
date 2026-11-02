@@ -7,13 +7,14 @@ import { DatabaseSync } from "node:sqlite";
 import type { Change, ChangeOp, ConflictResponse, WriteResponse } from "@lite-sync/core";
 import { ObjectStore } from "./store.ts";
 
-const SCHEMA_V1 = `
+const SCHEMA = `
 CREATE TABLE vault (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     salt TEXT NOT NULL,
     kdf TEXT NOT NULL,
     login_hash TEXT NOT NULL,
     wrapped_mk TEXT NOT NULL,
+    mk_proof_hash TEXT,
     updated_at INTEGER NOT NULL
 );
 CREATE TABLE admin (
@@ -80,6 +81,25 @@ CREATE TABLE audit (
     action TEXT NOT NULL,
     detail TEXT
 );
+CREATE TABLE plugin_sync (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seed_device TEXT NOT NULL,
+    ready INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE plugin_versions (
+    id TEXT NOT NULL,
+    rev INTEGER NOT NULL,
+    object TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (id, rev)
+);
+CREATE TABLE trusted_browsers (
+    id_hash TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL
+);
 INSERT INTO admin (id) VALUES (1);
 `;
 
@@ -105,14 +125,13 @@ export class Db {
         this.sql = new DatabaseSync(join(dataDir, "lite-sync.db"));
         this.sql.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;");
         this.objects = new ObjectStore(dataDir);
-        this.migrate();
+        this.initialise();
     }
 
-    private migrate() {
-        const { user_version } = this.sql.prepare("PRAGMA user_version").get() as { user_version: number };
-        if (user_version < 1) this.tx(() => this.sql.exec(SCHEMA_V1 + "PRAGMA user_version = 1;"));
-        // v2: SHA-256 of the master-key proof, required for a passphrase reset from a device.
-        if (user_version < 2) this.tx(() => this.sql.exec("ALTER TABLE vault ADD COLUMN mk_proof_hash TEXT; PRAGMA user_version = 2;"));
+    private initialise() {
+        // One current schema. Existing databases are opened as-is; no historical upgrade paths.
+        if (this.get("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'vault'")) return;
+        this.tx(() => this.sql.exec(SCHEMA));
     }
 
     // node:sqlite is synchronous, so a transaction cannot interleave with another request.

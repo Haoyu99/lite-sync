@@ -6,6 +6,7 @@ import type {
     Bytes,
     ChangePage,
     ConfigDoc,
+    PluginSyncCatalog,
     ConflictResponse,
     PairRequest,
     PairResponse,
@@ -153,6 +154,37 @@ export class Api {
         const res = await this.call("GET", "/v1/config");
         if (res.status !== 200) throw this.error(res);
         return this.json<ConfigDoc>(res);
+    }
+
+    async pluginCatalog(claim = false): Promise<PluginSyncCatalog> {
+        const res = await this.call(claim ? "POST" : "GET", "/v1/plugin-sync" + (claim ? "/claim" : ""));
+        if (res.status !== 200) throw this.error(res);
+        return this.json<PluginSyncCatalog>(res);
+    }
+
+    async completePluginSeed(): Promise<void> {
+        const res = await this.call("POST", "/v1/plugin-sync/complete");
+        if (res.status !== 200) throw this.error(res);
+    }
+
+    async getPluginPackage(id: string): Promise<{ rev: number; data: Bytes }> {
+        const res = await this.call("GET", `/v1/plugin-packages/${id}`);
+        if (res.status !== 200) throw this.error(res);
+        const rev = Number(res.headers["x-rev"]);
+        if (!Number.isSafeInteger(rev) || rev < 1) throw new ApiError(200, "missing_headers");
+        return { rev, data: res.body };
+    }
+
+    async putPluginPackage(id: string, baseRev: number, data: Bytes): Promise<number | null> {
+        const res = await this.call("PUT", `/v1/plugin-packages/${id}`, data, true, { "x-base-rev": String(baseRev) });
+        if (res.status === 409) return null;
+        if (res.status !== 200) throw this.error(res);
+        return this.json<{ rev: number }>(res).rev;
+    }
+
+    async reportPlugins(blob: string): Promise<void> {
+        const res = await this.call("PUT", "/v1/plugins", { blob });
+        if (res.status !== 200) throw this.error(res);
     }
 
     async status(report: StatusReport): Promise<void> {

@@ -47,7 +47,7 @@
             {#if !embedded}<span class="wordmark">lite-sync</span>{/if}
             <div class="stack" style="gap: 8px">
                 {#if !embedded}<h1>开启双重认证（可选）</h1>{/if}
-                <p class="muted">用 Google Authenticator 扫描二维码，然后输入它显示的 6 位数。开启后，登录需要口令和验证码。</p>
+                <p class="muted">用 Google Authenticator 扫描二维码，然后输入它显示的 6 位数。开启后，新浏览器首次登录需要口令和验证码，受信任浏览器后续免验证码。</p>
             </div>
             {#if qr}
                 <img class="qr" src={qr} alt="验证器二维码" />

@@ -92,7 +92,8 @@ export interface PreloginResponse {
     initialised: boolean;
     salt?: string;
     kdf?: KdfParams;
-    totp?: boolean; // whether login asks for an authenticator code
+    totp?: boolean; // whether two-factor authentication is enabled
+    trusted?: boolean; // this browser has already passed the second factor
 }
 
 export interface SetupRequest {

@@ -83,7 +83,20 @@ export interface StateStore {
 
 export type SyncPhase = "idle" | "syncing" | "offline" | "error" | "needs-confirm" | "revoked";
 
+export interface SyncProgress {
+    action: string;
+    path: string | null;
+    completed: number;
+    total: number;
+}
+
 export interface SyncStatus {
+    progress: SyncProgress | null;
+    uploaded: number;
+    downloaded: number;
+    updated: number;
+    deleted: number;
+    skipped: number;
     phase: SyncPhase;
     pending: number;
     lastSyncAt: number | null;
@@ -122,7 +135,7 @@ export class SyncEngine {
     private hashCache = new Map<string, { mtime: number; size: number; hash: string }>();
     private filter = new PathFilter([]);
     private config: SyncConfig = normaliseConfig({});
-    readonly status: SyncStatus = { phase: "idle", pending: 0, lastSyncAt: null, message: null, conflicts: [], guardCount: 0 };
+    readonly status: SyncStatus = { progress: null, uploaded: 0, downloaded: 0, updated: 0, deleted: 0, skipped: 0, phase: "idle", pending: 0, lastSyncAt: null, message: null, conflicts: [], guardCount: 0 };
 
     constructor(options: EngineOptions) {
         this.o = options;
@@ -147,6 +160,14 @@ export class SyncEngine {
     private setStatus(patch: Partial<SyncStatus>) {
         Object.assign(this.status, patch);
         this.o.onStatus?.(this.status);
+    }
+
+    private progress(action: string, path: string | null = null, completed = 0, total = 0) {
+        this.setStatus({ progress: { action, path, completed, total } });
+    }
+
+    private changed(kind: "uploaded" | "downloaded" | "updated" | "deleted") {
+        this.setStatus({ [kind]: this.status[kind] + 1 });
     }
 
     private async save() {
@@ -220,23 +241,26 @@ export class SyncEngine {
 
     private async cycle() {
         await this.ensureLoaded();
-        this.setStatus({ phase: "syncing", message: null });
+        this.setStatus({ phase: "syncing", message: null, progress: null, uploaded: 0, downloaded: 0, updated: 0, deleted: 0, skipped: 0 });
+        this.progress("正在获取同步配置");
         try {
             await this.loadConfig();
             await this.pull();
             const guarded = await this.reconcile();
-            const pending = await this.push();
+            let pending = await this.push();
             // Moves the cursor past our own uploads, so the reported progress includes them, and applies
             // files which a push conflict marked for download.
             await this.pull();
             if (guarded === 0 && Object.keys(this.state.dirty).length > 0) await this.reconcile();
+            pending = Math.max(pending, Object.keys(this.state.dirty).length);
             this.o.api.status({ pending, seq: this.state.cursor, clientVersion: this.o.clientVersion }).catch(() => {});
             this.setStatus({
-                phase: guarded > 0 ? "needs-confirm" : "idle",
+                phase: guarded > 0 ? "needs-confirm" : this.status.skipped > 0 ? "error" : "idle",
                 pending,
+                progress: null,
                 lastSyncAt: this.now(),
                 guardCount: guarded,
-                message: guarded > 0 ? `${guarded} 个文件将被删除或覆盖，等待确认` : null,
+                message: guarded > 0 ? `${guarded} 个文件将被删除或覆盖，等待确认` : this.status.skipped > 0 ? `${this.status.skipped} 个文件无法解密或校验，详情见同步日志` : null,
             });
         } catch (e) {
             if (e instanceof NetworkError || (e instanceof ApiError && (e.code === "server" || e.status === 429))) {
@@ -271,6 +295,7 @@ export class SyncEngine {
     }
 
     private async pull() {
+        this.progress("正在获取远端变更");
         for (;;) {
             const page = await this.o.api.changes(this.state.cursor);
             for (const c of page.changes) {
@@ -280,6 +305,7 @@ export class SyncEngine {
                     try {
                         path = key((await openMeta(this.o.keys, c.id, c.rev, c.meta)).path);
                     } catch (e) {
+                        this.setStatus({ skipped: this.status.skipped + 1 });
                         this.log(`跳过无法解密的变更 ${c.id.slice(0, 12)} rev ${c.rev}: ${String(e)}`);
                         continue;
                     }
@@ -336,14 +362,18 @@ export class SyncEngine {
         const hold = destructive.size > this.config.sync.massChangeGuard && !this.guardConfirmed;
         if (!hold) this.guardConfirmed = false;
 
+        let completed = 0;
         for (const [id, d] of items) {
             if (hold && destructive.has(id)) continue;
             if (this.o.isBusy?.(d.path)) continue;
+            this.progress(d.deleted ? "正在处理删除" : "正在下载 / 更新", d.path, completed, items.length);
             try {
                 await this.reconcileOne(id, d);
                 delete this.state.dirty[id];
+                this.progress("正在处理远端文件", d.path, ++completed, items.length);
             } catch (e) {
                 if (e instanceof DecryptError) {
+                    this.setStatus({ skipped: this.status.skipped + 1 });
                     this.log(`跳过无法解密或校验失败的文件 ${d.path}: ${e.message}`);
                     delete this.state.dirty[id];
                 } else throw e;
@@ -368,6 +398,7 @@ export class SyncEngine {
                 this.setIndex(path, id, remote.rev, null, null); // before trashing, see noteDeleted()
                 await this.save();
                 await this.o.vault.trash(path);
+                this.changed("deleted");
                 this.log(`已删除（来自其他设备）: ${path}`);
             } else {
                 // Modified here or of unknown origin: keep it. Push re-uploads it on top of the deletion.
@@ -381,6 +412,7 @@ export class SyncEngine {
             if (this.state.pendingDeletes[path]) return; // push decides: delete, or keep the remote edit
             const written = await this.o.vault.write(remote.meta.path, remote.data, remote.meta.mtime);
             this.setIndex(path, id, remote.rev, remote.meta.hash, written);
+            this.changed("downloaded");
             this.log(`已下载: ${path}`);
             return;
         }
@@ -389,10 +421,12 @@ export class SyncEngine {
         if (e?.hash && h === e.hash) {
             const written = await this.o.vault.write(path, remote.data, remote.meta.mtime);
             this.setIndex(path, id, remote.rev, remote.meta.hash, written);
+            this.changed("updated");
             this.log(`已更新: ${path}`);
             return;
         }
         await this.resolve(path, id, await this.o.vault.read(path), h, remote, e);
+        this.changed("updated");
     }
 
     // Both sides changed. Merges text and JSON from the last synchronised version, otherwise keeps the
@@ -442,24 +476,30 @@ export class SyncEngine {
     }
 
     private async upload(path: string, data: Bytes, hash: string, baseRev: number, st: LocalFile): Promise<WriteResult> {
+        this.progress("正在上传", path, this.status.progress?.completed ?? 0, this.status.progress?.total ?? 0);
         const id = await fileId(this.o.keys, path);
         const rev = baseRev + 1;
         const meta = await sealMeta(this.o.keys, id, rev, { path, mtime: st.mtime, size: data.byteLength, hash });
-        return this.o.api.put(id, baseRev, meta, await sealContent(this.o.keys, id, rev, data));
+        const result = await this.o.api.put(id, baseRev, meta, await sealContent(this.o.keys, id, rev, data));
+        if (result.ok) this.changed("uploaded");
+        return result;
     }
 
     // Returns the number of local changes still waiting to be uploaded.
     private async push(): Promise<number> {
         let pending = 0;
         const maxBytes = this.config.sync.maxFileSizeMB * 1024 * 1024;
+        this.progress("正在扫描本地文件");
         const files = await this.o.vault.list();
         const present = new Set(files.map((f) => key(f.path)));
 
         await this.pushDeletes(present);
 
-        for (const f of files) {
+        const eligible = files.filter((f) => this.filter.accepts(f.path) && f.size <= maxBytes);
+        let scanned = 0;
+        for (const f of eligible) {
+            this.progress("正在检查", f.path, scanned++, eligible.length);
             const p = key(f.path);
-            if (!this.filter.accepts(f.path) || f.size > maxBytes) continue;
             if (this.o.isBusy?.(f.path)) {
                 pending++;
                 continue;
@@ -512,6 +552,7 @@ export class SyncEngine {
             }
             const written = await this.o.vault.write(remote.meta.path, remote.data, remote.meta.mtime);
             this.setIndex(p, e.id, remote.rev, remote.meta.hash, written);
+            this.changed("downloaded");
             this.log(`本地缺失，已从服务器恢复: ${p}`);
             await this.save();
         }
@@ -543,6 +584,8 @@ export class SyncEngine {
                     this.setIndex(target, newId, r.results[0]!.rev, hash, st);
                     this.setIndex(p, e.id, r.results[1]!.rev, null, null);
                     delete this.state.pendingDeletes[p];
+                    this.changed("uploaded");
+                    this.changed("deleted");
                     this.log(`已重命名: ${p} → ${target}`);
                     await this.save();
                     continue;
@@ -553,6 +596,7 @@ export class SyncEngine {
             delete this.state.pendingDeletes[p];
             if (w.ok) {
                 this.setIndex(p, e.id, w.rev, null, null);
+                this.changed("deleted");
                 this.log(`已删除: ${p}`);
             } else if (!w.conflict.deleted) {
                 // Changed elsewhere after our last sync: keep that version instead of deleting it.

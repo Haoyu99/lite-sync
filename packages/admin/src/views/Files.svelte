@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, untrack } from "svelte";
     import {
         type FileEntry,
         type VersionEntry,
@@ -11,6 +11,7 @@
         sealMeta,
         sha256Hex,
     } from "@lite-sync/core";
+    import { buildFileTree, type FileTree } from "../lib/file-tree";
     import Modal from "../lib/Modal.svelte";
     import { api, describe } from "../lib/api";
     import { type DiffRow, lineDiff } from "../lib/diff";
@@ -23,6 +24,7 @@
 
     let files = $state<DecryptedFile[]>([]);
     let query = $state("");
+    let expanded = $state(new Set<string>());
     let showDeleted = $state(false);
     let error = $state("");
     let loading = $state(true);
@@ -60,6 +62,24 @@
     const visible = $derived(
         files.filter((f) => (showDeleted || !f.entry.deleted) && (!query || (f.path ?? "").toLowerCase().includes(query.toLowerCase())))
     );
+    const tree = $derived(buildFileTree(visible));
+    function toggleFolder(path: string) {
+        const next = new Set(expanded);
+        if (next.has(path)) next.delete(path); else next.add(path);
+        expanded = next;
+    }
+    $effect(() => {
+        const parts = selected?.path?.split("/") ?? [];
+        parts.pop();
+        const next = new Set(untrack(() => expanded));
+        let path = "";
+        for (const part of parts) {
+            path = path ? `${path}/${part}` : part;
+            next.add(path);
+        }
+        // Only react to selection; expanding ancestors should not prevent manual collapse.
+        if (parts.length) expanded = next;
+    });
     const deletedCount = $derived(files.filter((f) => f.entry.deleted).length);
     const current = $derived(versions.find((v) => v.rev === rev) ?? null);
     const prev = $derived(current ? versions.find((v) => v.rev < current.rev && !v.deleted) ?? null : null);
@@ -170,6 +190,22 @@
     const OP = { write: "写入", delete: "删除", restore: "恢复" } as const;
 </script>
 
+{#snippet folderContents(node: FileTree, depth: number)}
+    {#each node.folders as folder (folder.path)}
+        {@const isOpen = !!query.trim() || expanded.has(folder.path)}
+        <button class="folder-item" style:padding-left={`${10 + depth * 14}px`} aria-expanded={isOpen} onclick={() => toggleFolder(folder.path)} title={folder.path}>
+            <span aria-hidden="true">{isOpen ? "▾" : "▸"} 📁</span> {folder.name}
+        </button>
+        {#if isOpen}{@render folderContents(folder, depth + 1)}{/if}
+    {/each}
+    {#each node.files as f (f.entry.id)}
+        <button class="file-item" style:padding-left={`${10 + depth * 14}px`} class:deleted={f.entry.deleted} aria-current={selected?.entry.id === f.entry.id} onclick={() => (location.hash = `#/files/${f.entry.id}`)} title={f.path ?? "无法解密"}>
+            <span class="name">{f.path ? splitPath(f.path).name : "无法解密"}</span>
+            <span class="dir">{bytes(f.entry.size)} · {stamp(f.entry.updatedAt)}</span>
+        </button>
+    {/each}
+{/snippet}
+
 <header class="page-head">
     <h1>文件</h1>
     <span class="faint" style="font-size: 13px">文件名和内容都在这个浏览器里解密</span>
@@ -186,19 +222,17 @@
                 <span>显示已删除的文件{deletedCount ? `（${deletedCount}）` : ""}</span>
             </label>
         </div>
+        <div class="row" style="padding: 8px 12px; justify-content: space-between">
+            <span class="faint" style="font-size: 12px">{visible.length} 个文件</span>
+            <button class="btn btn-quiet btn-sm" onclick={() => { expanded = new Set(); query = ""; }}>折叠全部</button>
+        </div>
         <div class="file-list">
             {#if loading}
                 <p class="empty">正在解密文件列表…</p>
             {:else if visible.length === 0}
                 <p class="empty">{files.length === 0 ? "服务器上还没有文件。配对第一台设备后会出现在这里。" : "没有匹配的文件。"}</p>
             {:else}
-                {#each visible as f (f.entry.id)}
-                    {@const sp = f.path ? splitPath(f.path) : null}
-                    <button class="file-item" class:deleted={f.entry.deleted} aria-current={selected?.entry.id === f.entry.id} onclick={() => (location.hash = `#/files/${f.entry.id}`)}>
-                        <span class="name">{sp?.name ?? "无法解密"}</span>
-                        <span class="dir">{sp?.dir || "/"} · {bytes(f.entry.size)} · {stamp(f.entry.updatedAt)}</span>
-                    </button>
-                {/each}
+                {@render folderContents(tree, 0)}
             {/if}
         </div>
     </section>

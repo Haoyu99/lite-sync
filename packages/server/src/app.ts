@@ -51,8 +51,9 @@ type DeviceRow = { id: string; name: string };
 type Env = { Variables: { device: DeviceRow } };
 
 const SESSION_COOKIE = "ls_session";
-const SESSION_IDLE_MS = 30 * 60_000;
-const SESSION_MAX_MS = 12 * 60 * 60_000;
+const SESSION_MAX_MS = 7 * 24 * 60 * 60_000;
+const TRUST_COOKIE = "ls_trusted";
+const TRUST_MAX_MS = 365 * 24 * 60 * 60_000;
 const PAIRING_TTL_MS = 10 * 60_000;
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MS = 15 * 60_000;
@@ -183,6 +184,59 @@ export function createApp(opts: AppOptions) {
 
     const v1 = new Hono<Env>();
     v1.use("*", deviceAuth);
+
+    // Reuse the existing key/value table: no schema migration or sync-history changes.
+    v1.put("/plugins", async (c) => {
+        const body = await c.req.json().catch(() => null);
+        if (!isB64(body?.blob, 1 << 20)) return c.json({ error: "bad_request" }, 400);
+        const value = JSON.stringify({ blob: body.blob, updatedAt: now() });
+        db.run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            "plugins:" + c.get("device").id, value);
+        return c.json({ ok: true });
+    });
+
+    const pluginSeed = () => db.get<{ seed_device: string; ready: number }>("SELECT seed_device, ready FROM plugin_sync WHERE id = 1");
+    const pluginHead = (id: string) => db.get<{ rev: number; object: string }>("SELECT rev, object FROM plugin_versions WHERE id = ? ORDER BY rev DESC LIMIT 1", id);
+    const pluginCatalog = () => {
+        const seed = pluginSeed();
+        return { seedDevice: seed?.seed_device ?? null, ready: seed?.ready === 1,
+            packages: db.all<{ id: string; rev: number; updatedAt: number }>(
+                "SELECT p.id, p.rev, p.at AS updatedAt FROM plugin_versions p WHERE p.rev = (SELECT MAX(v.rev) FROM plugin_versions v WHERE v.id = p.id) ORDER BY p.id") };
+    };
+    v1.get("/plugin-sync", (c) => c.json(pluginCatalog()));
+    v1.post("/plugin-sync/claim", (c) => {
+        db.run("INSERT OR IGNORE INTO plugin_sync (id, seed_device) VALUES (1, ?)", c.get("device").id);
+        return c.json(pluginCatalog());
+    });
+    v1.post("/plugin-sync/complete", (c) => {
+        if (pluginSeed()?.seed_device !== c.get("device").id) return c.json({ error: "not_seed_device" }, 403);
+        db.run("UPDATE plugin_sync SET ready = 1 WHERE id = 1");
+        return c.json({ ok: true });
+    });
+    v1.get("/plugin-packages/:id", (c) => {
+        const id = c.req.param("id");
+        if (!ID_RE.test(id)) return c.json({ error: "bad_id" }, 400);
+        const head = pluginHead(id);
+        if (!head) return c.json({ error: "not_found" }, 404);
+        return c.body(new Uint8Array(db.objects.getSync(head.object)), 200, { "Content-Type": "application/octet-stream", "X-Rev": String(head.rev), "Cache-Control": "no-store" });
+    });
+    v1.put("/plugin-packages/:id", async (c) => {
+        const id = c.req.param("id");
+        const baseRev = intHeader(c, "x-base-rev");
+        if (!ID_RE.test(id) || baseRev === null) return c.json({ error: "bad_request" }, 400);
+        const seed = pluginSeed();
+        if (!seed || (!seed.ready && seed.seed_device !== c.get("device").id)) return c.json({ error: "seed_pending" }, 409);
+        const data = new Uint8Array(await c.req.arrayBuffer());
+        if (data.byteLength < 29 || data.byteLength > 50 * 1024 * 1024) return c.json({ error: "bad_request" }, 400);
+        const result = db.tx(() => {
+            const rev = pluginHead(id)?.rev ?? 0;
+            if (baseRev !== rev) return { ok: false, rev };
+            const object = db.objects.putSync(data);
+            db.run("INSERT INTO plugin_versions (id, rev, object, size, device_id, at) VALUES (?, ?, ?, ?, ?, ?)", id, rev + 1, object, data.byteLength, c.get("device").id, now());
+            return { ok: true, rev: rev + 1 };
+        });
+        return c.json(result, result.ok ? 200 : 409);
+    });
 
     v1.get("/vault", (c) => {
         const v = db.get<{ salt: string; kdf: string; wrapped_mk: string }>("SELECT salt, kdf, wrapped_mk FROM vault WHERE id = 1");
@@ -366,6 +420,18 @@ export function createApp(opts: AppOptions) {
         return !!v && typeof loginKey === "string" && safeEqual(sha256Hex(loginKey), v.login_hash);
     }
 
+    function trustedBrowser(c: Context): boolean {
+        const id = getCookie(c, TRUST_COOKIE);
+        if (!id) return false;
+        const row = db.get<{ last_at: number }>("SELECT last_at FROM trusted_browsers WHERE id_hash = ?", sha256Hex(id));
+        return !!row && now() - row.last_at < TRUST_MAX_MS;
+    }
+    function rememberBrowser(c: Context) {
+        const id = newToken();
+        db.run("INSERT INTO trusted_browsers (id_hash, created_at, last_at) VALUES (?, ?, ?)", sha256Hex(id), now(), now());
+        setCookie(c, TRUST_COOKIE, id, { httpOnly: true, secure: !opts.insecureCookies, sameSite: "Strict", path: "/admin", maxAge: TRUST_MAX_MS / 1000 });
+    }
+
     function startSession(c: Context) {
         const id = newToken();
         const t = now();
@@ -389,7 +455,7 @@ export function createApp(opts: AppOptions) {
 
     adminApi.get("/prelogin", (c) => {
         const v = vaultRow();
-        return c.json(v ? { initialised: true, salt: v.salt, kdf: JSON.parse(v.kdf), totp: !!adminRow().totp_secret } : { initialised: false });
+        return c.json(v ? { initialised: true, salt: v.salt, kdf: JSON.parse(v.kdf), totp: !!adminRow().totp_secret, trusted: trustedBrowser(c) } : { initialised: false });
     });
 
     adminApi.post("/setup", async (c) => {
@@ -421,8 +487,19 @@ export function createApp(opts: AppOptions) {
             recordFailure();
             return c.json({ error: "bad_credentials" }, 403);
         }
-        const r = checkTotp(body.totp ?? "", body.recoveryCode);
+        const trusted = trustedBrowser(c);
+        const r = trusted ? "ok" : checkTotp(body.totp ?? "", body.recoveryCode);
         if (r !== "ok") return c.json({ error: r }, r === "locked" ? 429 : 403);
+        if (adminRow().totp_secret) {
+            if (!trusted) rememberBrowser(c);
+            else {
+                // Rotate the browser credential; possession never substitutes for the passphrase.
+                const previous = getCookie(c, TRUST_COOKIE)!;
+                db.run("DELETE FROM trusted_browsers WHERE id_hash = ?", sha256Hex(previous));
+                rememberBrowser(c);
+            }
+        }
+        db.run("UPDATE admin SET fail_count = 0 WHERE id = 1");
         startSession(c);
         db.audit("admin", "login", body.recoveryCode ? "recovery code" : null);
         return c.json({ wrappedMk: vaultRow()!.wrapped_mk, recoveryCodesLeft: (JSON.parse(adminRow().recovery) as string[]).length });
@@ -433,7 +510,7 @@ export function createApp(opts: AppOptions) {
         const id = getCookie(c, SESSION_COOKIE);
         const t = now();
         const s = id ? db.get<{ created_at: number; last_at: number }>("SELECT created_at, last_at FROM sessions WHERE id_hash = ?", sha256Hex(id)) : undefined;
-        if (!s || t - s.last_at > SESSION_IDLE_MS || t - s.created_at > SESSION_MAX_MS) {
+        if (!s || t - s.created_at > SESSION_MAX_MS) {
             if (id) db.run("DELETE FROM sessions WHERE id_hash = ?", sha256Hex(id));
             return c.json({ error: "unauthorised" }, 401);
         }
@@ -448,9 +525,23 @@ export function createApp(opts: AppOptions) {
         return c.json({ ok: true });
     });
 
+    authed.post("/forget-browser", (c) => {
+        const trusted = getCookie(c, TRUST_COOKIE);
+        const active = getCookie(c, SESSION_COOKIE);
+        if (trusted) db.run("DELETE FROM trusted_browsers WHERE id_hash = ?", sha256Hex(trusted));
+        if (active) db.run("DELETE FROM sessions WHERE id_hash = ?", sha256Hex(active));
+        deleteCookie(c, TRUST_COOKIE, { path: "/admin" });
+        deleteCookie(c, SESSION_COOKIE, { path: "/admin" });
+        return c.json({ ok: true });
+    });
+
     authed.get("/session", (c) => {
         const a = adminRow();
+        const tag = sha256Hex(getCookie(c, SESSION_COOKIE)!);
+        const active = db.get<{ created_at: number }>("SELECT created_at FROM sessions WHERE id_hash = ?", tag)!;
         return c.json({
+            sessionTag: tag,
+            expiresAt: active.created_at + SESSION_MAX_MS,
             wrappedMk: vaultRow()!.wrapped_mk,
             totpEnabled: !!a.totp_secret,
             recoveryCodesLeft: (JSON.parse(a.recovery) as string[]).length,
@@ -477,6 +568,9 @@ export function createApp(opts: AppOptions) {
             "UPDATE admin SET totp_secret = totp_pending, totp_pending = NULL, totp_last_step = ?, recovery = ? WHERE id = 1",
             step, JSON.stringify(codes.map((x) => sha256Hex(x)))
         );
+        db.run("DELETE FROM trusted_browsers");
+        db.run("DELETE FROM sessions WHERE id_hash != ?", sha256Hex(getCookie(c, SESSION_COOKIE)!));
+        rememberBrowser(c);
         db.audit("admin", "totp.enabled");
         return c.json({ recoveryCodes: codes });
     });
@@ -492,6 +586,9 @@ export function createApp(opts: AppOptions) {
         const r = checkTotp(body?.totp ?? "", undefined);
         if (r !== "ok") return c.json({ error: r }, r === "locked" ? 429 : 403);
         db.run("UPDATE admin SET totp_secret = NULL, totp_pending = NULL, totp_last_step = 0, recovery = '[]' WHERE id = 1");
+        db.run("DELETE FROM trusted_browsers");
+        db.run("DELETE FROM sessions WHERE id_hash != ?", sha256Hex(getCookie(c, SESSION_COOKIE)!));
+        deleteCookie(c, TRUST_COOKIE, { path: "/admin" });
         db.audit("admin", "totp.disabled");
         return c.json({ ok: true });
     });
@@ -518,6 +615,10 @@ export function createApp(opts: AppOptions) {
             "UPDATE vault SET salt = ?, kdf = ?, login_hash = ?, wrapped_mk = ?, updated_at = ? WHERE id = 1",
             body.salt, JSON.stringify(body.kdf), sha256Hex(body.loginKey), body.wrappedMk, now()
         );
+        db.run("DELETE FROM trusted_browsers");
+        db.run("DELETE FROM sessions");
+        deleteCookie(c, TRUST_COOKIE, { path: "/admin" });
+        deleteCookie(c, SESSION_COOKIE, { path: "/admin" });
         db.audit("admin", "passphrase.changed");
         return c.json({ ok: true });
     });
@@ -534,6 +635,14 @@ export function createApp(opts: AppOptions) {
             pending: d.pending as number,
             revokedAt: (d.revoked_at as number | null) ?? null,
         }));
+
+    authed.get("/plugins", (c) => {
+        const reports = db.all<{ id: string; name: string; value: string | null }>(
+            "SELECT d.id, d.name, s.value FROM devices d LEFT JOIN settings s ON s.key = 'plugins:' || d.id WHERE d.revoked_at IS NULL ORDER BY d.created_at"
+        ).map((d) => ({ deviceId: d.id, deviceName: d.name,
+            ...(d.value ? JSON.parse(d.value) : { blob: null, updatedAt: null }) }));
+        return c.json({ reports });
+    });
 
     authed.get("/overview", (c) => {
         const counts = db.get<{ files: number; deleted: number }>(
@@ -740,6 +849,7 @@ export function issueSetupToken(db: Db): string | null {
 export function reset2fa(db: Db) {
     db.run("UPDATE admin SET totp_secret = NULL, totp_pending = NULL, totp_last_step = 0, recovery = '[]', fail_count = 0, locked_until = 0 WHERE id = 1");
     db.run("DELETE FROM sessions");
+    db.run("DELETE FROM trusted_browsers");
     db.audit("server", "totp.reset");
 }
 

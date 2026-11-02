@@ -6,7 +6,7 @@
   "scripts": {
     "build": "npm run build -w @lite-sync/admin && npm run build -w @lite-sync/plugin",
     "check": "tsc -p packages/core && tsc -p packages/server && tsc -p packages/plugin && npm run check -w @lite-sync/admin",
-    "test": "node --test --experimental-strip-types packages/core/test/core.test.ts packages/server/test/server.test.ts packages/plugin/test/engine.test.ts",
+    "test": "node --test --experimental-strip-types packages/core/test/core.test.ts packages/server/test/server.test.ts packages/plugin/test/engine.test.ts packages/plugin/test/plugins.test.ts packages/admin/test/file-tree.test.ts packages/admin/test/unlock-cache.test.ts packages/server/test/features.test.ts packages/plugin/test/plugin-sync.test.ts",
     "dev:server": "npm run dev -w @lite-sync/server",
     "dev:admin": "npm run dev -w @lite-sync/admin"
   },

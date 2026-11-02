@@ -1,4 +1,5 @@
 import { build } from "esbuild";
+import { copyFile } from "node:fs/promises";
 
 await build({
     entryPoints: ["src/main.ts"],
@@ -12,3 +13,5 @@ await build({
     sourcemap: false,
     logLevel: "info",
 });
+
+await copyFile("manifest.json", "dist/manifest.json");

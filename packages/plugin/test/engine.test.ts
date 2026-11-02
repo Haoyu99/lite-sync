@@ -10,7 +10,7 @@ import { ServerKey, newToken, sha256Hex } from "../../server/src/auth.ts";
 import { createApp } from "../../server/src/app.ts";
 import { Db } from "../../server/src/db.ts";
 import { Api, type Http } from "../src/api.ts";
-import { type LocalFile, type StateStore, type SyncState, SyncEngine, type VaultAdapter } from "../src/engine.ts";
+import { type LocalFile, type StateStore, type SyncState, type SyncStatus, SyncEngine, type VaultAdapter } from "../src/engine.ts";
 
 let clock = Date.UTC(2026, 9, 30, 12, 0, 0);
 const tick = () => (clock += 1000);
@@ -73,6 +73,7 @@ describe("sync engine", () => {
         );
         const vault = new MemoryVault();
         const logs: string[] = [];
+        const statuses: SyncStatus[] = [];
         const engine = new SyncEngine({
             api: new Api(http, "http://test", token),
             keys,
@@ -82,9 +83,10 @@ describe("sync engine", () => {
             clientVersion: "0.1.0",
             mobile: false,
             log: (m) => logs.push(m),
+            onStatus: (status) => statuses.push(structuredClone(status)),
             now: () => clock,
         });
-        return { engine, vault, logs };
+        return { engine, vault, logs, statuses };
     };
 
     beforeEach(async () => {
@@ -100,6 +102,27 @@ describe("sync engine", () => {
         keys = await deriveVaultKeys(newMasterKey());
     });
     after(() => rmSync(dir, { recursive: true, force: true }));
+
+    it("reports file progress and counts only actual transfers", async () => {
+        const a = device("Mac");
+        const b = device("Phone");
+        a.vault.set("notes/a.md", "hello");
+        a.vault.set("notes/b.md", "world");
+        await a.engine.sync();
+        assert.equal(a.engine.status.uploaded, 2);
+        assert.ok(a.statuses.some((s) => s.progress?.action === "正在上传" && s.progress.path === "notes/a.md" && s.progress.total === 2));
+        assert.equal(a.engine.status.progress, null);
+        await b.engine.sync();
+        assert.equal(b.engine.status.downloaded, 2);
+        assert.ok(b.statuses.some((s) => s.progress?.action === "正在下载 / 更新" && s.progress.total === 2));
+        await a.engine.sync();
+        assert.equal(a.engine.status.uploaded, 0, "an unchanged scan is not an upload");
+        a.vault.set("notes/a.md", "edited");
+        await a.engine.sync();
+        await b.engine.sync();
+        assert.equal(b.engine.status.updated, 1);
+        assert.equal(b.engine.status.pending, 0);
+    });
 
     it("propagates a new file and an edit", async () => {
         const a = device("Mac");

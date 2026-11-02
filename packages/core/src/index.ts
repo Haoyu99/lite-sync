@@ -3,3 +3,4 @@ export * from "./protocol.ts";
 export * from "./config.ts";
 export * from "./paths.ts";
 export * from "./merge.ts";
+export * from "./plugins.ts";

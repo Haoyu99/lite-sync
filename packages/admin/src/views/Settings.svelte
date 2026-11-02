@@ -5,6 +5,7 @@
         type PreloginResponse,
         type SyncConfig,
         DEFAULT_CONFIG,
+        EXCLUDED_PLUGINS,
         DEFAULT_KDF,
         aad,
         derivePassphraseKeys,
@@ -36,6 +37,9 @@
     let guard = $state(20);
     let maxMB = $state(50);
     let debounceSec = $state(2);
+    let syncPlugins = $state(true);
+    let syncPluginData = $state(true);
+    let excludedPlugins = $state("");
     let rawText = $state("");
     let configRev = $state(0);
     let configError = $state("");
@@ -62,7 +66,10 @@
         guard = c.sync.massChangeGuard;
         maxMB = c.sync.maxFileSizeMB;
         debounceSec = c.sync.debounceMs / 1000;
-        rawText = JSON.stringify(c, null, 2);
+        syncPlugins = c.obsidian.enabled && c.obsidian.communityPlugins;
+        syncPluginData = c.obsidian.pluginData;
+        excludedPlugins = c.obsidian.excludePlugins.filter((id) => !EXCLUDED_PLUGINS.has(id)).join(", ");
+        rawText = JSON.stringify({ ...c, obsidian: { ...c.obsidian, excludePlugins: c.obsidian.excludePlugins.filter((id) => !EXCLUDED_PLUGINS.has(id)) } }, null, 2);
     }
 
     async function loadConfig() {
@@ -101,6 +108,7 @@
         void store(
             {
                 ...base,
+                obsidian: { ...base.obsidian, enabled: syncPlugins, communityPlugins: syncPlugins, pluginData: syncPluginData, excludePlugins: [...new Set(excludedPlugins.split(/[,，\n]/).map((id) => id.trim()).filter((id) => !!id && !EXCLUDED_PLUGINS.has(id)))] },
                 exclude: [...new Set(excludes.map((x) => x.trim()).filter(Boolean))],
                 sync: { ...base.sync, massChangeGuard: Math.round(guard), maxFileSizeMB: Math.round(maxMB), debounceMs: Math.round(debounceSec * 1000) },
             },
@@ -141,7 +149,8 @@
                 totp: passCode,
             });
             curPass = newPass = newPass2 = passCode = "";
-            passNotice = "口令已修改。已配对的设备不受影响，下次登录后台请使用新口令。";
+            passNotice = "口令已修改，所有网页登录和浏览器信任已失效。";
+            window.dispatchEvent(new Event("lite-sync:expired"));
         } catch (err) {
             passError = describe(err);
         } finally {
@@ -234,6 +243,19 @@
             <span class="cfg-control num-wrap"><input class="input num" type="number" min="0.5" max="60" step="0.5" required bind:value={debounceSec} /> 秒</span>
         </label>
 
+        <label class="cfg-item">
+            <span class="cfg-label"><b>同步插件</b><span class="hint">首次同步的设备建立插件基准。启用状态、快捷键及卸载行为只影响本机；Lite Sync 自身始终排除。</span></span>
+            <span class="cfg-control check"><input type="checkbox" bind:checked={syncPlugins} />同步插件代码和版本</span>
+        </label>
+        <label class="cfg-item">
+            <span class="cfg-label"><b>同步插件配置</b><span class="hint">加密同步各插件的 data.json。收到更新时备份本地配置，并重新加载已启用的插件。</span></span>
+            <span class="cfg-control check"><input type="checkbox" bind:checked={syncPluginData} disabled={!syncPlugins} />同步配置</span>
+        </label>
+        <label class="cfg-item">
+            <span class="cfg-label"><b>排除的插件</b><span class="hint">填写插件 ID，用逗号分隔。排除的插件仍可在插件页查看。</span></span>
+            <input class="input cfg-control" bind:value={excludedPlugins} placeholder="插件 ID，多个用逗号分隔" />
+        </label>
+
         {#if configError}<p class="error">{configError}</p>{/if}
         {#if configNotice}<p class="notice">{configNotice}</p>{/if}
         <div class="row cfg-actions">
@@ -244,7 +266,7 @@
     <details class="advanced">
         <summary>高级：直接编辑 JSON</summary>
         <div class="stack">
-            <p class="hint">包含上面的四项，以及手机和电脑分开设置（overrides）、尚未实现的 .obsidian 同步和历史保留设置。</p>
+            <p class="hint">包含上面的同步设置、手机和电脑分开设置（overrides），以及尚未启用的其他 Obsidian 配置和历史保留设置。</p>
             <label class="field">
                 <span class="sr-only">配置 JSON</span>
                 <textarea rows="18" spellcheck="false" bind:value={rawText}></textarea>
@@ -280,7 +302,7 @@
         {#if offNotice}<p class="notice">{offNotice}</p>{/if}
         {#if session.totpEnabled}
             <form class="stack" onsubmit={disableTotp}>
-                <p class="muted" style="font-size: 14px">登录时需要口令和 Google Authenticator 验证码。关闭后只需要口令，恢复码也会作废。</p>
+                <p class="muted" style="font-size: 14px">新浏览器首次登录需要口令和验证码，已验证浏览器后续免验证码。关闭后恢复码也会作废。</p>
                 <label class="field">口令<input type="password" autocomplete="current-password" bind:value={offPass} required /></label>
                 <label class="field">验证码<input class="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" bind:value={offCode} required /></label>
                 {#if offError}<p class="error">{offError}</p>{/if}
@@ -290,7 +312,7 @@
             <Enrol embedded onDone={() => ((enrolling = false), (offNotice = ""))} />
         {:else}
             <p class="muted" style="font-size: 14px">
-                现在登录只需要口令。开启后还需要手机上 Google Authenticator 的 6 位验证码，口令泄露时别人也无法登录后台。
+                现在登录只需要口令。开启后，新浏览器首次登录还需要 Google Authenticator 验证码。
             </p>
             <button class="btn btn-primary" style="justify-self: start" onclick={() => ((enrolling = true), (offNotice = ""))}>开启双重认证</button>
         {/if}
@@ -318,3 +340,14 @@
     </form>
 </section>
 {/if}
+
+<section class="panel" aria-labelledby="browser-title">
+    <div class="panel-head"><h2 id="browser-title">此浏览器</h2></div>
+    <div class="panel-body stack">
+        <p class="muted">解锁有效期为 7 天，到期后需要重新输入口令。浏览器信任凭据最长保留一年，并在登录时续期；信任有效期间无需重复输入验证码。</p>
+        <button class="btn btn-danger" style="justify-self: start" onclick={async () => {
+            try { await api.post("/forget-browser"); window.dispatchEvent(new Event("lite-sync:expired")); }
+            catch (e) { configError = describe(e); }
+        }}>撤销此浏览器信任并退出</button>
+    </div>
+</section>
