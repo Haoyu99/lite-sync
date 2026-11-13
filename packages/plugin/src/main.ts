@@ -35,7 +35,7 @@ import { PluginFiles, type PluginRuntime } from "./plugin-files.ts";
 import { collectPlugins } from "./plugins.ts";
 import { SyncNotice } from "./sync-notice.ts";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const MK_STORAGE_KEY = "lite-sync-mk";
 
 interface Settings {

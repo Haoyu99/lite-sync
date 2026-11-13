@@ -106,6 +106,12 @@ docker exec lite-sync lite-sync reset-2fa    # 验证码和恢复码都丢了，
 
 尚未实现：其他 `.obsidian` 配置和主题同步、整库按时间点恢复、主密钥轮换、历史清理、明文导出。
 
+## 0.2.1 升级
+
+本次修复同步状态与提示闪烁、首次下载处理及 Windows 非法路径问题，并修复 WebSocket 握手 401。数据库结构不变，保留现有数据、历史和设备配对，无需清空或重新初始化。
+
+服务端拉取最新代码后执行 `docker compose up -d --build`。插件通过 BRAT 更新，或下载 Release 附件 `lite-sync-0.2.1.zip`，将其中的 `main.js`、`manifest.json` 覆盖到笔记库的 `.obsidian/plugins/lite-sync/`，再重启插件。保留本地 `data.json`；GitHub 自动生成的 Source code 压缩包不用于安装插件。
+
 ## 0.2.0 测试库重新初始化
 
 项目仍处于内部测试阶段，服务端只保留一份当前数据库结构，不提供旧数据库自动升级。此次清空服务端数据后重新部署和初始化。
