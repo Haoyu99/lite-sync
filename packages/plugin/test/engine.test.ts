@@ -17,6 +17,9 @@ const tick = () => (clock += 1000);
 
 class MemoryVault implements VaultAdapter {
     files = new Map<string, { data: Bytes; mtime: number }>();
+    async exists(path: string) {
+        return this.files.has(path) || [...this.files.keys()].some((p) => p.startsWith(path + "/"));
+    }
     async list(): Promise<LocalFile[]> {
         return [...this.files].map(([path, f]) => ({ path, mtime: f.mtime, size: f.data.byteLength }));
     }
@@ -75,7 +78,7 @@ describe("sync engine", () => {
         const logs: string[] = [];
         const statuses: SyncStatus[] = [];
         const store = new MemoryStore();
-        const engine = new SyncEngine({
+        const options: EngineOptions = {
             api: new Api(http, "http://test", token, timeoutMs),
             keys,
             vault,
@@ -87,8 +90,9 @@ describe("sync engine", () => {
             onStatus: (status) => statuses.push(structuredClone(status)),
             now: () => clock,
             ...overrides,
-        });
-        return { engine, vault, store, logs, statuses };
+        };
+        const engine = new SyncEngine(options);
+        return { engine, vault, store, logs, statuses, restart: () => new SyncEngine(options) };
     };
 
     beforeEach(async () => {
@@ -319,36 +323,203 @@ describe("sync engine", () => {
         assert.equal(a.vault.text("draft.md"), "written offline");
     });
 
-    it("continues past Windows-incompatible names and recovers after a source rename", async () => {
+    it("downloads the reported Windows filename and edits, restarts and deletes the same canonical file", async () => {
         const a = device("Mac");
-        a.vault.set("notes/2026:11.md", "incompatible");
+        const remote = "示例 文档 14-> 15.md";
+        const local = "示例 文档 14-＞ 15.md";
+        a.vault.set(remote, "original");
         a.vault.set("valid.md", "valid");
         await a.engine.sync();
-        const b = device("Windows", { pathProblem: windowsPathProblem });
+        const b = device("Windows", { windows: true });
         const stat = b.vault.stat.bind(b.vault);
+        const write = b.vault.write.bind(b.vault);
         b.vault.stat = async (path) => {
             assert.equal(windowsPathProblem(path), null, "invalid paths never reach the filesystem");
             return stat(path);
         };
+        b.vault.write = async (path, ...args) => {
+            assert.equal(windowsPathProblem(path), null);
+            assert.equal(b.store.state!.localPaths[remote], local, "persist aliases before writing");
+            return write(path, ...args);
+        };
         await b.engine.sync();
         assert.equal(b.vault.text("valid.md"), "valid");
-        assert.equal(b.engine.status.phase, "error");
-        assert.equal(b.engine.status.pending, 1);
-        assert.equal(b.engine.status.skipped, 1, "count a rejected file once per cycle");
-        assert.equal(b.engine.status.lastSyncAt, null);
-        assert.match(b.engine.status.message!, /notes\/2026:11.md/);
-        assert.equal(Object.keys(b.store.state!.dirty).length, 1, "the rejected path is retained for retry");
+        assert.equal(b.vault.text(local), "original");
+        assert.equal(b.engine.status.phase, "idle");
+        assert.equal(b.engine.status.pending, 0);
+        assert.equal(b.engine.status.skipped, 0);
+        assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM files")!.n, 2, "local aliases are not uploaded as duplicate notes");
+        b.engine = b.restart();
+        b.vault.set(local, "edited on Windows");
         await b.engine.sync();
-        assert.equal(b.engine.status.skipped, 1);
-        const data = a.vault.files.get("notes/2026:11.md")!;
-        a.vault.files.delete("notes/2026:11.md");
-        a.vault.files.set("notes/2026-11.md", data);
-        await a.engine.noteRenamed("notes/2026:11.md", "notes/2026-11.md");
+        await a.engine.sync();
+        assert.equal(a.vault.text(remote), "edited on Windows");
+        assert.equal(a.vault.text(local), undefined);
+        a.vault.set(remote, "edited on Mac");
         await a.engine.sync();
         await b.engine.sync();
-        assert.equal(b.vault.text("notes/2026-11.md"), "incompatible");
+        assert.equal(b.vault.text(local), "edited on Mac");
+        await b.vault.trash(local);
+        await b.engine.noteDeleted(local);
+        await b.engine.sync();
+        await a.engine.sync();
+        assert.equal(a.vault.text(remote), undefined);
+        assert.equal(b.vault.text(local), undefined);
+        assert.equal(b.engine.status.pending, 0);
+    });
+
+    it("keeps literal full-width names, existing local notes and case collisions distinct on Windows", async () => {
+        const a = device("Mac");
+        a.vault.set("arrow>.md", "ASCII arrow");
+        a.vault.set("arrow＞.md", "full-width arrow");
+        a.vault.set("Note.md", "upper");
+        a.vault.set("note.md", "lower");
+        a.vault.set("existing?.md", "remote question");
+        await a.engine.sync();
+        const b = device("Windows", { windows: true });
+        b.vault.set("existing？.md", "pre-existing local");
+        await b.engine.sync();
+        assert.equal(b.engine.status.phase, "idle");
+        assert.equal(b.engine.status.pending, 0);
+        const paths = b.vault.paths();
+        assert.equal(paths.length, 6);
+        assert.equal(new Set(paths.map((p) => p.toLowerCase())).size, 6);
+        assert.equal(b.vault.text("existing？.md"), "pre-existing local");
+        const contents = paths.map((p) => b.vault.text(p));
+        for (const text of ["ASCII arrow", "full-width arrow", "upper", "lower", "remote question", "pre-existing local"])
+            assert.ok(contents.includes(text), text);
+        for (const path of paths) assert.equal(windowsPathProblem(path), null, path);
+        await a.engine.sync();
+        assert.equal(a.vault.text("arrow>.md"), "ASCII arrow");
+        assert.equal(a.vault.text("arrow＞.md"), "full-width arrow");
+        assert.equal(a.vault.text("existing?.md"), "remote question");
+        assert.equal(a.vault.text("existing？.md"), "pre-existing local");
+    });
+
+    it("preserves folder aliases for new files and a Windows folder rename", async () => {
+        const a = device("Mac");
+        a.vault.set("folder>/one?.md", "one");
+        a.vault.set("folder＞/other.md", "literal folder");
+        await a.engine.sync();
+        const b = device("Windows", { windows: true });
+        await b.engine.sync();
+        const localFolder = b.store.state!.localPaths["folder>"]!;
+        const localFile = b.store.state!.localPaths["folder>/one?.md"]!;
+        assert.equal(b.vault.text(localFile), "one");
+        b.vault.set(localFolder + "/new.md", "created on Windows");
+        await b.engine.sync();
+        await a.engine.sync();
+        assert.equal(a.vault.text("folder>/new.md"), "created on Windows");
+        assert.equal(a.vault.text("folder＞/new.md"), undefined);
+        b.engine = b.restart();
+        for (const [path, data] of [...b.vault.files]) {
+            if (!path.startsWith(localFolder + "/")) continue;
+            b.vault.files.delete(path);
+            b.vault.files.set("renamed" + path.slice(localFolder.length), data);
+        }
+        await b.engine.noteRenamed(localFolder, "renamed");
+        await b.engine.sync();
+        await a.engine.sync();
+        assert.equal(a.vault.text("folder>/one?.md"), undefined);
+        assert.equal(a.vault.text("renamed/one?.md"), "one");
+        assert.equal(a.vault.text("renamed/new.md"), "created on Windows");
+        assert.equal(a.vault.text("folder＞/other.md"), "literal folder");
+        assert.equal(b.engine.status.pending, 0);
+        assert.equal(b.vault.paths().filter((p) => p.startsWith("renamed/")).length, 2);
+    });
+
+    it("uses physical aliases for busy-note checks and propagates a Windows file rename", async () => {
+        const remote = "file>.md";
+        const a = device("Mac");
+        a.vault.set(remote, "original");
+        await a.engine.sync();
+        let busy = false;
+        const b = device("Windows", { windows: true, isBusy: (path) => busy && path === "file＞.md" });
+        await b.engine.sync();
+        busy = true;
+        a.vault.set(remote, "remote changed");
+        await a.engine.sync();
+        await b.engine.sync();
+        assert.equal(b.vault.text("file＞.md"), "original");
+        assert.equal(b.engine.status.pending, 1);
+        busy = false;
+        await b.engine.sync();
+        assert.equal(b.vault.text("file＞.md"), "remote changed");
+        const file = b.vault.files.get("file＞.md")!;
+        b.vault.files.delete("file＞.md");
+        b.vault.files.set("renamed.md", file);
+        await b.engine.noteRenamed("file＞.md", "renamed.md");
+        await b.engine.sync();
+        await a.engine.sync();
+        assert.equal(a.vault.text(remote), undefined);
+        assert.equal(a.vault.text("renamed.md"), "remote changed");
+        assert.deepEqual(b.vault.paths(), ["renamed.md"]);
+    });
+
+    it("does not write aliased notes until their mapping has been saved successfully", async () => {
+        const a = device("Mac");
+        a.vault.set("file>.md", "content");
+        await a.engine.sync();
+        const store = new MemoryStore();
+        let fail = true;
+        const b = device("Windows", { windows: true, store: {
+            load: () => store.load(),
+            save: async (state) => {
+                if (fail && Object.keys(state.localPaths).length > 0) throw new Error("alias save failed");
+                await store.save(state);
+            },
+        } });
+        await b.engine.sync();
+        assert.equal(b.engine.status.phase, "error");
+        assert.deepEqual(b.vault.paths(), []);
+        fail = false;
+        await b.engine.sync();
+        assert.equal(b.vault.text("file＞.md"), "content");
+        assert.equal(b.engine.status.phase, "idle");
+        assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM files")!.n, 1);
+    });
+
+    it("retries a file retained by 0.2.1 without resetting the cursor or pairing", async () => {
+        const remote = "示例 文档 14-> 15.md";
+        const a = device("Mac");
+        a.vault.set(remote, "retained pending file");
+        await a.engine.sync();
+        const entry = a.store.state!.index[remote]!;
+        const store = new MemoryStore();
+        // Snapshot of the preceding release: pending remote change, no local-path dictionary.
+        store.state = { version: 1, cursor: db.head(), index: {}, config: null, pendingDeletes: {},
+            dirty: { [entry.id]: { path: remote, rev: entry.rev, deleted: false } } } as SyncState;
+        const b = device("Windows", { windows: true, store });
+        await b.engine.sync();
+        assert.equal(b.vault.text("示例 文档 14-＞ 15.md"), "retained pending file");
+        assert.equal(b.engine.cursor, db.head());
         assert.equal(b.engine.status.pending, 0);
         assert.equal(b.engine.status.phase, "idle");
+        assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM files")!.n, 1);
+    });
+
+    it("applies a source rename and deletion without leaving Windows alias copies behind", async () => {
+        const a = device("Mac");
+        a.vault.set("old>.md", "keep me");
+        await a.engine.sync();
+        const b = device("Windows", { windows: true });
+        await b.engine.sync();
+        assert.deepEqual(b.vault.paths(), ["old＞.md"]);
+        const data = a.vault.files.get("old>.md")!;
+        a.vault.files.delete("old>.md");
+        a.vault.files.set("new?.md", data);
+        await a.engine.noteRenamed("old>.md", "new?.md");
+        await a.engine.sync();
+        b.engine = b.restart();
+        await b.engine.sync();
+        assert.deepEqual(b.vault.paths(), ["new？.md"]);
+        assert.equal(b.vault.text("new？.md"), "keep me");
+        await a.vault.trash("new?.md");
+        await a.engine.noteDeleted("new?.md");
+        await a.engine.sync();
+        await b.engine.sync();
+        assert.deepEqual(b.vault.paths(), []);
+        assert.equal(b.engine.status.pending, 0);
     });
 
     it("prefetches at most three files while applying files and saving in order", { timeout: 5000 }, async () => {
