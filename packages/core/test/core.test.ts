@@ -21,6 +21,7 @@ import {
     utf8,
     wrapMasterKey,
     windowsPathProblem,
+    windowsFileName,
 } from "../src/index.ts";
 
 const FAST_KDF = { alg: "PBKDF2-SHA256", iterations: 1000 } as const;
@@ -167,6 +168,13 @@ describe("conflictPath", () => {
 });
 
 describe("Windows paths", () => {
+    it("adapts the reported arrow filename and reserved segments to valid local names", () => {
+        assert.equal(windowsFileName("示例 文档 14-> 15.md"), "示例 文档 14-＞ 15.md");
+        assert.equal(windowsFileName("CON.md"), "_CON.md");
+        assert.equal(windowsFileName("folder. "), "folder．　");
+        for (const name of ['a:b.md', 'a?b.md', 'a*b.md', 'a"b.md', 'a<b.md', 'a>b.md', 'a|b.md', 'a\\b.md', 'a\x01b.md', 'CON.md', 'LPT1.txt', 'COM³.txt', 'folder.', 'space '])
+            assert.equal(windowsPathProblem(windowsFileName(name)), null, name);
+    });
     it("checks every path segment for forbidden characters, reserved names and suffixes", () => {
         for (const path of ['notes/a:b.md', 'a?b.md', 'a*b.md', 'a"b.md', 'a<b.md', 'a>b.md', 'a|b.md', 'a\\b.md', 'a\x01b.md', 'CON.md', 'aux/data.md', 'LPT1.txt', 'COM³.txt', 'folder./a.md', 'space /a.md'])
             assert.ok(windowsPathProblem(path), path);

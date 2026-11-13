@@ -25,7 +25,6 @@ import {
     seal,
     utf8,
     pluginInventoryAad,
-    windowsPathProblem,
 } from "@lite-sync/core";
 import { Api, ApiError, type Http, normaliseBaseUrl } from "./api.ts";
 import { type LocalFile, type StateStore, type SyncState, type SyncStatus, SyncEngine, type VaultAdapter } from "./engine.ts";
@@ -35,7 +34,7 @@ import { PluginFiles, type PluginRuntime } from "./plugin-files.ts";
 import { collectPlugins } from "./plugins.ts";
 import { SyncNotice } from "./sync-notice.ts";
 
-const VERSION = "0.2.1";
+const VERSION = "0.2.2";
 const MK_STORAGE_KEY = "lite-sync-mk";
 
 interface Settings {
@@ -81,6 +80,10 @@ class ObsidianVault implements VaultAdapter {
 
     async list(): Promise<LocalFile[]> {
         return this.app.vault.getFiles().map((f) => ({ path: f.path, mtime: f.stat.mtime, size: f.stat.size }));
+    }
+
+    async exists(path: string): Promise<boolean> {
+        return !!this.app.vault.getAbstractFileByPath(normalizePath(path));
     }
 
     async stat(path: string): Promise<LocalFile | null> {
@@ -292,7 +295,7 @@ export default class LiteSyncPlugin extends Plugin {
             clientVersion: VERSION,
             mobile: Platform.isMobile,
             isBusy: (p) => this.isBusy(p),
-            pathProblem: Platform.isWin ? windowsPathProblem : undefined,
+            windows: Platform.isWin,
             log: (m) => this.log(m),
             onStatus: (s) => { if (this.engine?.status === s) this.onStatus(s); },
         });
@@ -410,12 +413,12 @@ export default class LiteSyncPlugin extends Plugin {
         this.registerEvent(this.app.vault.on("modify", (f) => f instanceof TFile && schedule()));
         this.registerEvent(
             this.app.vault.on("delete", (f) => {
-                if (f instanceof TFile) void this.engine?.noteDeleted(f.path).then(schedule);
+                void this.engine?.noteDeleted(f.path).then(schedule);
             })
         );
         this.registerEvent(
             this.app.vault.on("rename", (f, oldPath) => {
-                if (f instanceof TFile) void this.engine?.noteRenamed(oldPath, f.path).then(schedule);
+                void this.engine?.noteRenamed(oldPath, f.path).then(schedule);
             })
         );
         this.registerEvent(

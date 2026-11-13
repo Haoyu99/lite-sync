@@ -36,6 +36,7 @@ import {
     utf8,
 } from "@lite-sync/core";
 import { type Api, ApiError, NetworkError, type WriteResult } from "./api.ts";
+import { WindowsVault } from "./windows-vault.ts";
 
 export interface LocalFile {
     path: string;
@@ -44,6 +45,7 @@ export interface LocalFile {
 }
 
 export interface VaultAdapter {
+    exists(path: string): Promise<boolean>; // files and folders
     list(): Promise<LocalFile[]>;
     stat(path: string): Promise<LocalFile | null>;
     read(path: string): Promise<Bytes>;
@@ -74,6 +76,7 @@ export interface SyncState {
     dirty: Record<string, DirtyEntry>; // by file ID
     pendingDeletes: Record<string, { renamedTo?: string }>; // by path
     config: { rev: number; json: unknown } | null;
+    localPaths: Record<string, string>; // canonical path -> Windows local path, including folders
 }
 
 export interface StateStore {
@@ -117,12 +120,12 @@ export interface EngineOptions {
     log?: (message: string) => void;
     onStatus?: (status: SyncStatus) => void;
     now?: () => number;
-    pathProblem?: (path: string) => string | null;
+    windows?: boolean;
 }
 
 const key = (path: string) => path.normalize("NFC");
 
-export const emptyState = (): SyncState => ({ version: 1, cursor: 0, index: {}, dirty: {}, pendingDeletes: {}, config: null });
+export const emptyState = (): SyncState => ({ version: 1, cursor: 0, index: {}, dirty: {}, pendingDeletes: {}, config: null, localPaths: {} });
 
 type Remote = { deleted: true; rev: number } | { deleted: false; rev: number; meta: FileMeta; data: Bytes };
 
@@ -135,13 +138,18 @@ export class SyncEngine {
     private guardConfirmed = false;
     private hashCache = new Map<string, { mtime: number; size: number; hash: string }>();
     private filter = new PathFilter([]);
-    private pathProblems = new Set<string>();
+    private windowsVault: WindowsVault | null = null;
     private lastReport = 0;
     private config: SyncConfig = normaliseConfig({});
     readonly status: SyncStatus = { progress: null, uploaded: 0, downloaded: 0, updated: 0, deleted: 0, skipped: 0, phase: "idle", pending: 0, lastSyncAt: null, message: null, conflicts: [], guardCount: 0 };
 
     constructor(options: EngineOptions) {
         this.o = options;
+        if (options.windows) {
+            const vault = new WindowsVault(options.vault, () => this.state.localPaths, () => this.save(), (message) => this.log(message));
+            this.windowsVault = vault;
+            this.o = { ...options, vault, isBusy: (path) => options.isBusy?.(vault.toLocal(path)) ?? false };
+        }
     }
 
     get settings(): SyncConfig {
@@ -192,17 +200,6 @@ export class SyncEngine {
         catch (e) { this.log(`设备进度暂未上报，下次重试: ${String(e)}`); }
     }
 
-    private blocked(path: string): boolean {
-        const problem = this.o.pathProblem?.(path);
-        if (!problem) return false;
-        if (!this.pathProblems.has(path)) {
-            this.pathProblems.add(path);
-            this.setStatus({ skipped: this.status.skipped + 1 });
-            this.log(`无法同步 ${path}: ${problem}；请在源设备重命名后重试，其他文件继续同步`);
-        }
-        return true;
-    }
-
     private async ensureLoaded() {
         if (this.loaded) return;
         const s = await this.o.store.load();
@@ -220,20 +217,31 @@ export class SyncEngine {
 
     async noteDeleted(path: string) {
         await this.ensureLoaded();
-        const e = this.state.index[key(path)];
+        path = key(this.windowsVault?.toRemote(path) ?? path);
         // The engine marks a path as deleted before trashing it, so its own deletions are ignored here.
-        if (!e || e.hash === null) return;
-        this.state.pendingDeletes[key(path)] = {};
+        let changed = false;
+        for (const [p, e] of Object.entries(this.state.index)) {
+            if ((p === path || p.startsWith(path + "/")) && e.hash !== null && this.filter.accepts(p)) {
+                this.state.pendingDeletes[p] = {};
+                changed = true;
+            }
+        }
+        if (!changed) return;
         await this.save();
     }
 
     async noteRenamed(oldPath: string, newPath: string) {
         await this.ensureLoaded();
-        const e = this.state.index[key(oldPath)];
-        if (e && e.hash !== null && this.filter.accepts(oldPath)) {
-            this.state.pendingDeletes[key(oldPath)] = { renamedTo: key(newPath) };
-            await this.save();
+        const old = key(this.windowsVault?.toRemote(oldPath) ?? oldPath);
+        const target = key(this.windowsVault?.toRemote(newPath) ?? newPath);
+        this.windowsVault?.moved(oldPath, newPath);
+        if (old !== target) {
+            for (const [p, e] of Object.entries(this.state.index)) {
+                if ((p === old || p.startsWith(old + "/")) && e.hash !== null && this.filter.accepts(p))
+                    this.state.pendingDeletes[p] = { renamedTo: target + p.slice(old.length) };
+            }
         }
+        await this.save();
     }
 
     confirmMassChange() {
@@ -270,7 +278,6 @@ export class SyncEngine {
 
     private async cycle() {
         const previousSyncAt = this.status.lastSyncAt;
-        this.pathProblems.clear();
         this.setStatus({ phase: "syncing", message: null, progress: null, uploaded: 0, downloaded: 0, updated: 0, deleted: 0, skipped: 0 });
         this.progress("正在获取同步配置");
         try {
@@ -291,7 +298,7 @@ export class SyncEngine {
                 progress: null,
                 lastSyncAt: guarded === 0 && pending === 0 && this.status.skipped === 0 ? this.now() : this.status.lastSyncAt,
                 guardCount: guarded,
-                message: guarded > 0 ? `${guarded} 个文件将被删除或覆盖，等待确认` : this.status.skipped > 0 ? `${this.status.skipped} 个文件未能同步，详情见同步日志${this.pathProblems.size ? `；请在源设备重命名 Windows 不支持的路径：${[...this.pathProblems].join("、")}` : ""}` : null,
+                message: guarded > 0 ? `${guarded} 个文件将被删除或覆盖，等待确认` : this.status.skipped > 0 ? `${this.status.skipped} 个文件未能同步，详情见同步日志` : null,
             });
         } catch (e) {
             if (e instanceof NetworkError || (e instanceof ApiError && (e.code === "server" || e.status === 429))) {
@@ -396,7 +403,6 @@ export class SyncEngine {
             if (!this.filter.accepts(d.path)) { delete this.state.dirty[id]; continue; }
             // A path rejected on this device may later be renamed/deleted at its source.
             if (d.deleted && !this.state.index[d.path]) { delete this.state.dirty[id]; continue; }
-            if (this.blocked(d.path)) continue;
             const st = await this.o.vault.stat(d.path);
             const e = this.state.index[d.path];
             if (!st || !e?.hash) continue;
@@ -405,7 +411,7 @@ export class SyncEngine {
         const hold = destructive.size > this.config.sync.massChangeGuard && !this.guardConfirmed;
         if (!hold) this.guardConfirmed = false;
 
-        const ready = items.filter(([id, d]) => this.state.dirty[id] && !this.blocked(d.path)
+        const ready = items.filter(([id, d]) => this.state.dirty[id]
             && !(hold && destructive.has(id)) && !this.o.isBusy?.(d.path));
         // Prefetch at most three files; writes and durable index updates remain ordered.
         type Download = { ok: true; remote: Remote | null } | { ok: false; error: unknown };
@@ -609,7 +615,6 @@ export class SyncEngine {
         for (const [p, e] of Object.entries(this.state.index)) {
             if (e.hash === null || present.has(p) || this.state.pendingDeletes[p] || !this.filter.accepts(p)) continue;
             if (this.state.dirty[e.id]) continue;
-            if (this.blocked(p)) { pending.add(p); continue; }
             const remote = await this.fetchRemote(e.id).catch((err) => {
                 if (err instanceof DecryptError) return null;
                 throw err;
