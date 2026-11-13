@@ -5,12 +5,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
-import { type Bytes, type VaultKeys, deriveVaultKeys, fromUtf8, newMasterKey, utf8 } from "@lite-sync/core";
+import { type Bytes, type VaultKeys, deriveVaultKeys, fromUtf8, newMasterKey, utf8, windowsPathProblem } from "@lite-sync/core";
 import { ServerKey, newToken, sha256Hex } from "../../server/src/auth.ts";
 import { createApp } from "../../server/src/app.ts";
 import { Db } from "../../server/src/db.ts";
 import { Api, type Http } from "../src/api.ts";
-import { type LocalFile, type StateStore, type SyncState, type SyncStatus, SyncEngine, type VaultAdapter } from "../src/engine.ts";
+import { type EngineOptions, type LocalFile, type StateStore, type SyncState, type SyncStatus, SyncEngine, type VaultAdapter } from "../src/engine.ts";
 
 let clock = Date.UTC(2026, 9, 30, 12, 0, 0);
 const tick = () => (clock += 1000);
@@ -65,7 +65,7 @@ describe("sync engine", () => {
     let http: Http;
     let keys: VaultKeys;
 
-    const device = (name: string) => {
+    const device = (name: string, overrides: Partial<EngineOptions> = {}, timeoutMs = 30_000) => {
         const token = newToken();
         db.run(
             "INSERT INTO devices (id, name, platform, client_version, token_hash, created_at) VALUES (?, ?, 'macos', '0.1.0', ?, ?)",
@@ -74,19 +74,21 @@ describe("sync engine", () => {
         const vault = new MemoryVault();
         const logs: string[] = [];
         const statuses: SyncStatus[] = [];
+        const store = new MemoryStore();
         const engine = new SyncEngine({
-            api: new Api(http, "http://test", token),
+            api: new Api(http, "http://test", token, timeoutMs),
             keys,
             vault,
-            store: new MemoryStore(),
+            store,
             deviceName: name,
             clientVersion: "0.1.0",
             mobile: false,
             log: (m) => logs.push(m),
             onStatus: (status) => statuses.push(structuredClone(status)),
             now: () => clock,
+            ...overrides,
         });
-        return { engine, vault, logs, statuses };
+        return { engine, vault, store, logs, statuses };
     };
 
     beforeEach(async () => {
@@ -315,5 +317,126 @@ describe("sync engine", () => {
         assert.equal(offline.engine.status.phase, "idle");
         await a.engine.sync();
         assert.equal(a.vault.text("draft.md"), "written offline");
+    });
+
+    it("continues past Windows-incompatible names and recovers after a source rename", async () => {
+        const a = device("Mac");
+        a.vault.set("notes/2026:11.md", "incompatible");
+        a.vault.set("valid.md", "valid");
+        await a.engine.sync();
+        const b = device("Windows", { pathProblem: windowsPathProblem });
+        const stat = b.vault.stat.bind(b.vault);
+        b.vault.stat = async (path) => {
+            assert.equal(windowsPathProblem(path), null, "invalid paths never reach the filesystem");
+            return stat(path);
+        };
+        await b.engine.sync();
+        assert.equal(b.vault.text("valid.md"), "valid");
+        assert.equal(b.engine.status.phase, "error");
+        assert.equal(b.engine.status.pending, 1);
+        assert.equal(b.engine.status.skipped, 1, "count a rejected file once per cycle");
+        assert.equal(b.engine.status.lastSyncAt, null);
+        assert.match(b.engine.status.message!, /notes\/2026:11.md/);
+        assert.equal(Object.keys(b.store.state!.dirty).length, 1, "the rejected path is retained for retry");
+        await b.engine.sync();
+        assert.equal(b.engine.status.skipped, 1);
+        const data = a.vault.files.get("notes/2026:11.md")!;
+        a.vault.files.delete("notes/2026:11.md");
+        a.vault.files.set("notes/2026-11.md", data);
+        await a.engine.noteRenamed("notes/2026:11.md", "notes/2026-11.md");
+        await a.engine.sync();
+        await b.engine.sync();
+        assert.equal(b.vault.text("notes/2026-11.md"), "incompatible");
+        assert.equal(b.engine.status.pending, 0);
+        assert.equal(b.engine.status.phase, "idle");
+    });
+
+    it("prefetches at most three files while applying files and saving in order", { timeout: 5000 }, async () => {
+        const a = device("Mac");
+        for (let n = 0; n < 9; n++) a.vault.set(`${n}.md`, `file ${n}`);
+        await a.engine.sync();
+        const real = http;
+        let active = 0, peak = 0, started = 0;
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        http = async (req) => {
+            if (!req.url.includes("/v1/files/") || req.method !== "GET") return real(req);
+            active++; started++; peak = Math.max(peak, active);
+            if (started === 3) release();
+            try { await gate; return await real(req); }
+            finally { active--; }
+        };
+        const b = device("Linux");
+        let writing = false;
+        const write = b.vault.write.bind(b.vault);
+        b.vault.write = async (...args) => {
+            assert.equal(writing, false);
+            writing = true;
+            try {
+                if (b.engine.status.downloaded === 0) {
+                    const report = db.get<{ ack_seq: number; pending: number }>("SELECT ack_seq, pending FROM devices WHERE id = 'Linux'")!;
+                    assert.equal(report.ack_seq, db.head(), "the cursor is reported before the initial download finishes");
+                    assert.equal(report.pending, 9);
+                }
+                tick();
+                return await write(...args);
+            }
+            finally { writing = false; }
+        };
+        await b.engine.sync();
+        assert.equal(peak, 3);
+        assert.equal(started, 9);
+        assert.equal(b.engine.status.downloaded, 9);
+        assert.equal(db.get<{ pending: number }>("SELECT pending FROM devices WHERE id = 'Linux'")!.pending, 0);
+        assert.equal(Object.keys(b.store.state!.dirty).length, 0);
+        for (const stage of ["网络下载", "解密校验", "本地写入", "索引保存"])
+            assert.ok(b.logs.some((line) => line.includes(`耗时 · ${stage}`)));
+    });
+
+    it("times out a stalled download, retains its dirty entry and retries successfully", async () => {
+        const a = device("Mac");
+        a.vault.set("a.md", "recover me");
+        await a.engine.sync();
+        const real = http;
+        let stalled = true;
+        http = (req) => stalled && req.url.includes("/v1/files/") ? new Promise(() => {}) : real(req);
+        const b = device("Linux", {}, 15);
+        await b.engine.sync();
+        assert.equal(b.engine.status.phase, "offline");
+        assert.equal(b.engine.status.progress, null);
+        assert.match(b.engine.status.message!, /请求超时/);
+        assert.equal(Object.keys(b.store.state!.dirty).length, 1);
+        stalled = false;
+        await b.engine.sync();
+        assert.equal(b.vault.text("a.md"), "recover me");
+        assert.equal(b.engine.status.phase, "idle");
+    });
+
+    it("counts busy remote paths once and finishes the local scan counter", async () => {
+        const a = device("Mac");
+        a.vault.set("busy.md", "remote");
+        await a.engine.sync();
+        let busy = true;
+        const b = device("Linux", { isBusy: () => busy });
+        b.vault.set("busy.md", "local");
+        await b.engine.sync();
+        assert.equal(b.engine.status.pending, 1);
+        assert.equal(b.engine.status.lastSyncAt, null);
+        assert.ok(b.statuses.some((s) => s.progress?.action === "正在检查" && s.progress.completed === s.progress.total && s.progress.total === 1));
+        busy = false;
+        await b.engine.sync();
+        assert.equal(b.engine.status.pending, 0);
+    });
+
+    it("reports index failures without overwriting a state which failed to load", async () => {
+        let saves = 0;
+        const b = device("Broken", { store: {
+            load: async () => { throw new Error("IndexedDB unavailable"); },
+            save: async () => { saves++; },
+        } });
+        await b.engine.sync();
+        assert.equal(b.engine.status.phase, "error");
+        assert.match(b.engine.status.message!, /IndexedDB unavailable/);
+        assert.equal(saves, 0);
     });
 });

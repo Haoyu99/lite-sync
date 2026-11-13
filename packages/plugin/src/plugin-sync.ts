@@ -27,7 +27,7 @@ export interface PluginSyncOptions {
     host: PluginHost;
     load(): Promise<PluginSyncState | null>;
     save(state: PluginSyncState): Promise<void>;
-    progress(message: string): void;
+    progress(message: string, active?: boolean): void;
     log(message: string): void;
 }
 export interface PluginSyncResult { uploaded: number; applied: number; conflicts: number; waiting: boolean }
@@ -89,7 +89,7 @@ export class PluginSync {
         }
         let processed = 0;
         for (const head of catalog.packages) {
-            o.progress(`正在同步插件 ${++processed}/${catalog.packages.length}…`);
+            o.progress(`正在检查插件 ${++processed}/${catalog.packages.length}…`, false);
             const current = local.get(head.id) ?? null;
             const entry = state.index[head.id];
             // A disappearance after installation means local uninstall, never a remote deletion.

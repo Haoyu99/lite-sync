@@ -20,6 +20,7 @@ import {
     unwrapMasterKey,
     utf8,
     wrapMasterKey,
+    windowsPathProblem,
 } from "../src/index.ts";
 
 const FAST_KDF = { alg: "PBKDF2-SHA256", iterations: 1000 } as const;
@@ -162,6 +163,15 @@ describe("conflictPath", () => {
         const at = new Date(2026, 9, 30, 14, 2);
         assert.equal(conflictPath("a/笔记.md", "iPhone", at), "a/笔记 (冲突 iPhone 10-30 1402).md");
         assert.equal(conflictPath("a.b/README", "Mac/1", at), "a.b/README (冲突 Mac-1 10-30 1402)");
+    });
+});
+
+describe("Windows paths", () => {
+    it("checks every path segment for forbidden characters, reserved names and suffixes", () => {
+        for (const path of ['notes/a:b.md', 'a?b.md', 'a*b.md', 'a"b.md', 'a<b.md', 'a>b.md', 'a|b.md', 'a\\b.md', 'a\x01b.md', 'CON.md', 'aux/data.md', 'LPT1.txt', 'COM³.txt', 'folder./a.md', 'space /a.md'])
+            assert.ok(windowsPathProblem(path), path);
+        for (const path of ['notes/笔记.md', 'CONtext.md', 'COM10.md', 'a.b/a.md', '笔记 (冲突 Windows 11-07 1200).md'])
+            assert.equal(windowsPathProblem(path), null, path);
     });
 });
 
