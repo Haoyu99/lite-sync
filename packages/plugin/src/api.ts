@@ -54,11 +54,13 @@ export class Api {
     private http: Http;
     private base: string;
     private token: string;
+    private timeoutMs: number;
 
-    constructor(http: Http, baseUrl: string, token: string) {
+    constructor(http: Http, baseUrl: string, token: string, timeoutMs = 30_000) {
         this.http = http;
         this.base = normaliseBaseUrl(baseUrl);
         this.token = token;
+        this.timeoutMs = timeoutMs;
     }
 
     static async pair(http: Http, baseUrl: string, req: PairRequest): Promise<PairResponse> {
@@ -80,10 +82,18 @@ export class Api {
             headers["content-type"] = "application/json";
         }
         let res: HttpResponse;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            res = await this.http({ method, url: this.base + path, headers, body: payload });
+            res = await Promise.race([
+                this.http({ method, url: this.base + path, headers, body: payload }),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new NetworkError(`请求超时（${this.timeoutMs / 1000} 秒）: ${method} ${path}，下次同步将重试`)), this.timeoutMs);
+                }),
+            ]);
         } catch (e) {
             throw new NetworkError(e instanceof Error ? e.message : String(e));
+        } finally {
+            clearTimeout(timer);
         }
         if (res.status === 401) throw new ApiError(401, "unauthorised");
         if (res.status >= 500 || res.status === 429) throw new ApiError(res.status, "server");
@@ -188,6 +198,7 @@ export class Api {
     }
 
     async status(report: StatusReport): Promise<void> {
-        await this.call("POST", "/v1/status", report);
+        const res = await this.call("POST", "/v1/status", report);
+        if (res.status !== 200) throw this.error(res);
     }
 }

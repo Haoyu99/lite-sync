@@ -40,14 +40,29 @@ async function fixture() {
         let state: PluginSyncState | null = null;
         const api = new Api(http, "http://test", token);
         const logs: string[] = [];
+        const activeProgress: string[] = [];
         const makeSync = () => new PluginSync({ api, keys: customKeys, deviceId: name, mobile, host,
             load: async () => structuredClone(state), save: async (s) => { state = structuredClone(s); },
-            progress: (m) => logs.push(m), log: (m) => logs.push(m) });
-        return { host, api, sync: makeSync(), restart: makeSync, logs };
+            progress: (m, active = true) => { logs.push(m); if (active) activeProgress.push(m); }, log: (m) => logs.push(m) });
+        return { host, api, sync: makeSync(), restart: makeSync, logs, activeProgress };
     };
     return { db, device, close: () => { db.sql.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 const config = normaliseConfig({});
+
+it("reports an unchanged plugin scan without opening transfer progress", async () => {
+    const f = await fixture();
+    try {
+        const a = f.device("Mac");
+        a.host.installed.set("calendar", bundle());
+        await a.sync.sync(config);
+        a.activeProgress.length = 0;
+        const result = await a.sync.sync(config);
+        assert.equal(result.uploaded + result.applied, 0);
+        assert.deepEqual(a.activeProgress, []);
+        assert.ok(a.logs.some((message) => message.startsWith("正在检查插件")));
+    } finally { f.close(); }
+});
 
 it("seeds from the first device, installs/configures other devices, and never synchronises enablement or uninstalls", async () => {
     const f = await fixture();

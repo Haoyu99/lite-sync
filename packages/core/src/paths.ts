@@ -47,12 +47,22 @@ export class PathFilter {
 
     accepts(path: string): boolean {
         const p = path.normalize("NFC");
-        if (p === "" || p.startsWith("/") || p.split("/").some((s) => s === ".." || s === "")) return false;
+        if (p === "" || p.startsWith("/") || p.includes("\\") || p.includes("\0") || p.split("/").some((s) => s === "." || s === ".." || s === "")) return false;
         if (p === this.configDir || p.startsWith(this.configDir + "/")) return false;
         if (p.startsWith(".trash/")) return false;
         if (ALWAYS_EXCLUDED.some((r) => r.test(p))) return false;
         return !this.patterns.some((r) => r.test(p));
     }
+}
+
+// Do not silently rename: a changed path has a different encrypted file ID and can split a note.
+export function windowsPathProblem(path: string): string | null {
+    for (const segment of path.split("/")) {
+        if (/[<>:"\\|?*\x00-\x1f]/.test(segment)) return "文件名包含 Windows 不支持的字符";
+        if (/[. ]$/.test(segment)) return "Windows 文件名不能以空格或句点结尾";
+        if (/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(segment)) return "文件名是 Windows 保留名称";
+    }
+    return null;
 }
 
 const TEXT_EXT = new Set(["md", "txt", "canvas", "json", "css", "js", "csv", "yaml", "yml", "html", "svg", "base"]);

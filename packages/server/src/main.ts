@@ -51,9 +51,8 @@ if (command) {
     process.exit(1);
 }
 
-const { app, wsEvents } = createApp({ db, serverKey, insecureCookies: env.LITE_SYNC_INSECURE_COOKIES === "1" });
-
-app.get("/v1/events", upgradeWebSocket(() => wsEvents()));
+const { app } = createApp({ db, serverKey, insecureCookies: env.LITE_SYNC_INSECURE_COOKIES === "1",
+    eventsRoute: (events) => upgradeWebSocket(() => events()) });
 
 if (existsSync(adminDir)) {
     app.get("/", (c) => c.redirect("/admin/"));

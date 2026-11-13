@@ -1,10 +1,10 @@
 // HTTP and WebSocket routes. Device API under /v1, admin API under /admin/api. See docs/design.md §5 and §7.
 
 import { randomUUID } from "node:crypto";
-import { Hono, type Context, type Next } from "hono";
+import { Hono, type Context, type Next, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { WSContext } from "hono/ws";
+import type { WSContext, WSEvents } from "hono/ws";
 import type {
     ActivityDay,
     AuditEntry,
@@ -45,6 +45,7 @@ export interface AppOptions {
     maxBodyBytes?: number;
     insecureCookies?: boolean; // plain-HTTP development only
     now?: () => number;
+    eventsRoute?: (events: () => WSEvents) => MiddlewareHandler;
 }
 
 type DeviceRow = { id: string; name: string };
@@ -348,8 +349,6 @@ export function createApp(opts: AppOptions) {
         return c.json({ ok: true });
     });
 
-    app.route("/v1", v1);
-
     // ===== WebSocket change notifications ===================================================
     // Browsers cannot set headers on WebSocket requests, so the first message carries the token.
 
@@ -375,6 +374,11 @@ export function createApp(opts: AppOptions) {
             },
         };
     };
+
+    // The handshake is public; authentication happens in the first WebSocket message.
+    // Register before the device router, whose wildcard middleware requires a Bearer header.
+    if (opts.eventsRoute) app.get("/v1/events", opts.eventsRoute(wsEvents));
+    app.route("/v1", v1);
 
     // ===== Admin API ========================================================================
 
