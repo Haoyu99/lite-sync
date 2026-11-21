@@ -19,7 +19,10 @@ export async function collectPlugins(adapter: PluginFiles, configDir: string): P
         if (dir.split("/").at(-1) === "lite-sync") continue;
         const path = `${dir}/manifest.json`;
         if (!(await adapter.exists(path))) continue;
-        const m = JSON.parse(await adapter.read(path));
+        const m: unknown = JSON.parse(await adapter.read(path));
+        if (!m || typeof m !== "object" || !("id" in m) || typeof m.id !== "string" ||
+            !("name" in m) || typeof m.name !== "string" || !("version" in m) || typeof m.version !== "string")
+            throw new Error("插件 manifest 格式无效");
         plugins.push({ id: m.id, name: m.name, version: m.version, enabled: enabled.has(m.id) });
     }
     return parsePluginInventory({ plugins });

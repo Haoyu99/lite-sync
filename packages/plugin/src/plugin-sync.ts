@@ -115,7 +115,8 @@ export class PluginSync {
             const downloaded = await this.download(head);
             if (!allowed(downloaded.bundle)) continue;
             const remote = prepare(downloaded.bundle);
-            if (o.mobile && JSON.parse(remote.files["manifest.json"]!).isDesktopOnly === true) {
+            const manifest = JSON.parse(remote.files["manifest.json"]!) as { isDesktopOnly?: unknown };
+            if (o.mobile && manifest.isDesktopOnly === true) {
                 state.index[head.id] = { rev: downloaded.rev, hash: "", unsupported: true };
                 continue;
             }

@@ -1,0 +1,6 @@
+.lite-sync-log {
+    white-space: pre-wrap;
+    max-height: 60vh;
+    overflow: auto;
+    font-size: var(--font-smallest);
+}

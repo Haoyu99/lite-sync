@@ -57,6 +57,7 @@ export class PathFilter {
 
 export function windowsPathProblem(path: string): string | null {
     for (const segment of path.split("/")) {
+        // eslint-disable-next-line no-control-regex -- Windows explicitly forbids U+0000 through U+001F.
         if (/[<>:"\\|?*\x00-\x1f]/.test(segment)) return "文件名包含 Windows 不支持的字符";
         if (/[. ]$/.test(segment)) return "Windows 文件名不能以空格或句点结尾";
         if (/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(segment)) return "文件名是 Windows 保留名称";
@@ -67,6 +68,7 @@ export function windowsPathProblem(path: string): string | null {
 // Used only for local names. The encrypted metadata and file ID keep the original path.
 export function windowsFileName(name: string): string {
     const replacements: Record<string, string> = { '<': '＜', '>': '＞', ':': '：', '"': '＂', '\\': '＼', '|': '｜', '?': '？', '*': '＊' };
+    // eslint-disable-next-line no-control-regex -- Escape Windows-forbidden control characters as well as punctuation.
     let safe = name.replace(/[<>:"\\|?*\x00-\x1f]/g, (c) => replacements[c] ?? `~${c.charCodeAt(0).toString(16).padStart(2, "0")}`)
         .replace(/[. ]+$/g, (suffix) => suffix.replace(/\./g, '．').replace(/ /g, '　'));
     if (/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(safe)) safe = '_' + safe;

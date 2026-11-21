@@ -1,9 +1,16 @@
 {
   "name": "lite-sync",
+  "license": "MIT",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/core", "packages/server", "packages/plugin", "packages/admin"],
+  "workspaces": [
+    "packages/core",
+    "packages/server",
+    "packages/plugin",
+    "packages/admin"
+  ],
   "scripts": {
+    "lint:plugin": "eslint .",
     "build": "npm run build -w @lite-sync/admin && npm run build -w @lite-sync/plugin",
     "check": "tsc -p packages/core && tsc -p packages/server && tsc -p packages/plugin && npm run check -w @lite-sync/admin",
     "test": "node --test --experimental-strip-types packages/core/test/core.test.ts packages/server/test/server.test.ts packages/plugin/test/engine.test.ts packages/plugin/test/plugins.test.ts packages/admin/test/file-tree.test.ts packages/admin/test/unlock-cache.test.ts packages/server/test/features.test.ts packages/plugin/test/plugin-sync.test.ts packages/plugin/test/sync-notice.test.ts packages/server/test/websocket.test.ts",
@@ -12,6 +19,9 @@
   },
   "devDependencies": {
     "@types/node": "26.6.6",
-    "typescript": "5.9.3"
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.6.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.73.0"
   }
 }

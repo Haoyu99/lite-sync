@@ -34,7 +34,6 @@ import { PluginFiles, type PluginRuntime } from "./plugin-files.ts";
 import { collectPlugins } from "./plugins.ts";
 import { SyncNotice } from "./sync-notice.ts";
 
-const VERSION = "0.2.2";
 const MK_STORAGE_KEY = "lite-sync-mk";
 
 interface Settings {
@@ -51,7 +50,7 @@ const http: Http = async (req) => {
         url: req.url,
         method: req.method,
         headers: req.headers,
-        body: req.body ? (req.body.buffer.slice(req.body.byteOffset, req.body.byteOffset + req.body.byteLength) as ArrayBuffer) : undefined,
+        body: req.body ? req.body.buffer.slice(req.body.byteOffset, req.body.byteOffset + req.body.byteLength) : undefined,
         throw: false,
     });
     const headers: Record<string, string> = {};
@@ -99,7 +98,7 @@ class ObsidianVault implements VaultAdapter {
 
     async write(path: string, data: Bytes, mtime?: number): Promise<LocalFile> {
         const p = normalizePath(path);
-        const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+        const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
         const opts = mtime ? { mtime } : undefined;
         const existing = this.app.vault.getFileByPath(p);
         if (existing) await this.app.vault.modifyBinary(existing, buf, opts);
@@ -131,7 +130,7 @@ class IdbStore implements StateStore {
                 req.result.onversionchange = () => { req.result.close(); this.connection = null; };
                 resolve(req.result);
             };
-            req.onerror = () => { this.connection = null; reject(req.error); };
+            req.onerror = () => { this.connection = null; reject(new Error("无法打开同步索引", { cause: req.error })); };
         });
     }
     async close() {
@@ -145,7 +144,7 @@ class IdbStore implements StateStore {
             const tx = db.transaction("kv");
             const req = tx.objectStore("kv").get(key);
             tx.oncomplete = () => resolve((req.result as T | undefined) ?? null);
-            tx.onerror = () => reject(tx.error);
+            tx.onerror = () => reject(new Error("同步索引读取失败", { cause: tx.error }));
             tx.onabort = () => reject(tx.error ?? new Error("同步索引读取中断"));
         });
     }
@@ -155,7 +154,7 @@ class IdbStore implements StateStore {
             const tx = db.transaction("kv", "readwrite");
             tx.objectStore("kv").put(value, key);
             tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
+            tx.onerror = () => reject(new Error("同步索引保存失败", { cause: tx.error }));
             tx.onabort = () => reject(tx.error ?? new Error("同步索引保存中断"));
         });
     }
@@ -168,7 +167,7 @@ class IdbStore implements StateStore {
         await new Promise<void>((resolve, reject) => {
             const req = indexedDB.deleteDatabase(this.name);
             req.onsuccess = () => resolve();
-            req.onerror = () => reject(req.error);
+            req.onerror = () => reject(new Error("同步索引清除失败", { cause: req.error }));
             req.onblocked = () => reject(new Error("同步索引仍被其他窗口使用，请关闭其他窗口后重试"));
         });
     }
@@ -292,7 +291,7 @@ export default class LiteSyncPlugin extends Plugin {
             vault: new ObsidianVault(this.app),
             store: this.store!,
             deviceName: this.settings.deviceName,
-            clientVersion: VERSION,
+            clientVersion: this.manifest.version,
             mobile: Platform.isMobile,
             isBusy: (p) => this.isBusy(p),
             windows: Platform.isWin,
@@ -544,7 +543,7 @@ export default class LiteSyncPlugin extends Plugin {
             code,
             name: this.settings.deviceName,
             platform: devicePlatform(),
-            clientVersion: VERSION,
+            clientVersion: this.manifest.version,
         });
         this.settings.token = res.token;
         this.settings.deviceId = res.deviceId;
@@ -619,11 +618,7 @@ class LogModal extends Modal {
     }
     onOpen() {
         this.titleEl.setText("lite-sync 日志");
-        const pre = this.contentEl.createEl("pre", { text: this.text });
-        pre.style.whiteSpace = "pre-wrap";
-        pre.style.maxHeight = "60vh";
-        pre.style.overflow = "auto";
-        pre.style.fontSize = "12px";
+        this.contentEl.createEl("pre", { text: this.text, cls: "lite-sync-log" });
     }
 }
 

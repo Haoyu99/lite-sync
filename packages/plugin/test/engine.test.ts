@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { type Bytes, type VaultKeys, deriveVaultKeys, fromUtf8, newMasterKey, utf8, windowsPathProblem } from "@lite-sync/core";
 import { ServerKey, newToken, sha256Hex } from "../../server/src/auth.ts";
 import { createApp } from "../../server/src/app.ts";
@@ -107,7 +107,10 @@ describe("sync engine", () => {
         };
         keys = await deriveVaultKeys(newMasterKey());
     });
-    after(() => rmSync(dir, { recursive: true, force: true }));
+    afterEach(() => {
+        db.sql.close();
+        rmSync(dir, { recursive: true, force: true });
+    });
 
     it("reports file progress and counts only actual transfers", async () => {
         const a = device("Mac");

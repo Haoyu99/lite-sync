@@ -72,7 +72,7 @@ export function normaliseConfig(input: unknown): SyncConfig {
     const { overrides: _defaultOverrides, ...rest } = DEFAULT_CONFIG;
     const overrides: SyncConfig["overrides"] = {};
     const raw = isObject(input) && isObject(input.overrides) ? input.overrides : {};
-    for (const k of ["mobile", "desktop"] as const) if (isObject(raw[k])) overrides[k] = raw[k] as never;
+    for (const k of ["mobile", "desktop"] as const) if (isObject(raw[k])) overrides[k] = raw[k];
     const base: SyncConfig = { ...shape(rest, input), schema: 1, overrides };
     const s = base.sync;
     s.debounceMs = clamp(s.debounceMs, 500, 60_000);

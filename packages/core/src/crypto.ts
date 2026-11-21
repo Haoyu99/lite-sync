@@ -31,7 +31,7 @@ const subtle = globalThis.crypto.subtle;
 const te = new TextEncoder();
 const td = new TextDecoder("utf-8", { fatal: true });
 
-export const utf8 = (s: string): Bytes => te.encode(s) as Bytes;
+export const utf8 = (s: string): Bytes => te.encode(s);
 export const fromUtf8 = (b: Uint8Array): string => td.decode(b);
 
 export function randomBytes(n: number): Bytes {
@@ -76,7 +76,7 @@ async function hkdf(ikm: Bytes, info: string, bytes = 32): Promise<Bytes> {
 const aesKey = (raw: Bytes) => subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 
 export async function derivePassphraseKeys(passphrase: string, salt: Bytes, kdf: KdfParams): Promise<PassphraseKeys> {
-    if (kdf.alg !== "PBKDF2-SHA256") throw new Error(`Unsupported KDF: ${kdf.alg}`);
+    if (kdf.alg !== "PBKDF2-SHA256") throw new Error("Unsupported KDF algorithm");
     const base = await subtle.importKey("raw", utf8(passphrase.normalize("NFC")), "PBKDF2", false, ["deriveBits"]);
     const root = new Uint8Array(
         await subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: kdf.iterations }, base, 512)

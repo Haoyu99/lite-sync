@@ -1,8 +1,23 @@
 # lite-sync
 
+Lite Sync syncs an Obsidian vault through a server you host, with end-to-end encrypted file contents and paths, version history, and conflict recovery. This project is in early development and is intended for a single user with multiple devices. See [English setup and disclosures](docs/README.en.md).
+
 lite-sync 是一个自托管的个人 Obsidian 同步项目，由 Obsidian 插件、同步服务端和网页管理后台组成。它把多台设备上的笔记和附件同步到你自己的服务器，使用端到端加密保护文件内容和路径，并保留文件版本，方便查看历史和回滚。
 
 适合希望自行掌握服务器和数据存储、在多台设备之间同步个人笔记库的用户。项目面向单用户使用，目前处于第一阶段开发中。
+
+## 使用前须知与数据披露
+
+- **服务器与费用**：必须自行部署 lite-sync 服务端并配置 HTTPS，没有开发者运营的同步服务，也不需要向开发者注册账号或购买订阅；服务器、域名和存储由你自行准备。网页后台需要初始化管理员口令，每台设备需要配对码和解锁口令。
+- **网络连接**：插件通过 HTTPS 和 WebSocket 连接你填写的服务器，进行配对、同步、版本查询和设备状态上报。插件不接入广告、分析或遥测服务；Obsidian 或 BRAT 自身的插件安装和更新可能访问 GitHub。
+- **传输与存储**：笔记、附件、文件路径、社区插件清单及插件包在客户端加密后上传。设备名、平台、客户端版本、设备标识、同步时间、文件大小、版本及活动元数据并不全部加密；服务器及反向代理也能观察连接 IP。端到端加密不隐藏全部使用信息。服务端数据与日志由部署者掌握。
+- **本地存储与访问**：插件读写当前笔记库及其配置目录，在 Obsidian 本地存储保存解锁后的主密钥，在插件配置保存设备令牌，并用 IndexedDB 保存同步索引。解除配对会清除该设备的这些凭据和索引；请保护设备和笔记库的本地数据。插件不扫描笔记库外的用户文件。
+- **其他插件的代码与配置**：新服务端默认开启社区插件同步，会在设备间复制 `main.js`、`manifest.json`、`styles.css` 和 `data.json`；配置中可能含有其他服务的凭据。新插件不会自动启用，已启用插件更新时会暂停并重新加载；启用状态仍由各设备决定。可以在网页后台关闭插件同步、关闭配置同步或排除指定插件。Lite Sync 自身和 LiveSync 永久排除，不会通过该同步机制自行更新。
+- **支持范围**：声明支持桌面与移动端，但实际设备兼容性仍需持续验证。请先用测试库验证，保留独立备份；同步与版本历史不能代替备份。后续涉及数据结构的测试版本可能需要按发布说明重新初始化服务端。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。打包进插件的第三方代码及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 主要功能
 
@@ -87,11 +102,13 @@ docker exec lite-sync lite-sync reset-2fa    # 验证码和恢复码都丢了，
 
 1. 把仓库推到 GitHub（私有仓库也可以）。
 2. 构建插件：`npm run build -w @lite-sync/plugin`。
-3. 在 GitHub 上新建一个 Release，标签和 `manifest.json` 里的版本号一致（例如 `0.1.0`），上传 `packages/plugin/dist/main.js` 和 `packages/plugin/dist/manifest.json` 两个文件。
+3. 在 GitHub 上新建一个 Release，标签和 `manifest.json` 里的版本号一致（例如 `0.2.3`），上传 `packages/plugin/dist/main.js`、`packages/plugin/dist/manifest.json` 和 `packages/plugin/dist/styles.css` 三个独立附件。
 4. 在每台设备的 Obsidian 里安装 BRAT，选择「Add beta plugin」，填写仓库地址。私有仓库需要在 BRAT 设置里填一个只读的 GitHub token。
 5. 启用 lite-sync，打开设置，填写服务器地址和后台生成的配对码，再输入口令。
 
-更新插件时，修改 `manifest.json` 和 `packages/plugin/manifest.json` 的版本号，重新构建并发布新的 Release，然后在 BRAT 里手动检查更新。
+更新插件时，修改 `manifest.json`、`packages/plugin/manifest.json` 和插件包版本，更新根目录及插件目录的 `versions.json`，重新构建并发布同版本标签的 Release，然后在 BRAT 里手动检查更新。
+
+官方社区目录收录准备和提交步骤见 [docs/community-submission.md](docs/community-submission.md)。当前仍通过 BRAT 或 Release 附件安装，不代表已经获得官方收录。
 
 ## 从 LiveSync 迁移
 
@@ -105,6 +122,12 @@ docker exec lite-sync lite-sync reset-2fa    # 验证码和恢复码都丢了，
 已完成：加密同步、版本历史和单个文件回滚、冲突合并和冲突副本、大批量删除保护、设备配对和吊销、口令加 Google Authenticator 登录、恢复码、可开关的双重认证、统一配置。
 
 尚未实现：其他 `.obsidian` 配置和主题同步、整库按时间点恢复、主密钥轮换、历史清理、明文导出。
+
+## 0.2.3 社区目录收录准备
+
+补齐 MIT 许可证、第三方依赖声明、英文安装说明和网络及数据披露，增加官方推荐的 ESLint 检查。日志样式改为单独的 `styles.css`，插件 manifest 解析增加类型校验，IndexedDB 错误保留原因并给出明确提示。
+
+通过 BRAT 更新，或用 Release 的 `main.js`、`manifest.json` 和 `styles.css` 覆盖插件目录内对应文件，保留本地 `data.json`。本次不改变服务端协议和数据库结构，无需清空数据或重新配对。社区目录收录状态以官方页面为准。
 
 ## 0.2.2 升级
 

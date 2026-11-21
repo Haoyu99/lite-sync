@@ -57,8 +57,10 @@ export function parsePluginBundle(value: unknown): PluginBundle {
         files[name] = content;
     }
     if (!files["main.js"] || !files["manifest.json"]) throw new Error("插件包缺少代码或 manifest");
-    const manifest = JSON.parse(files["manifest.json"]);
-    if (manifest.id !== bundle.id || typeof manifest.version !== "string" || typeof manifest.name !== "string") throw new Error("插件 ID 与 manifest 不一致");
+    const manifest: unknown = JSON.parse(files["manifest.json"]);
+    if (!manifest || typeof manifest !== "object" || !("id" in manifest) || manifest.id !== bundle.id ||
+        !("version" in manifest) || typeof manifest.version !== "string" ||
+        !("name" in manifest) || typeof manifest.name !== "string") throw new Error("插件 ID 与 manifest 不一致");
     if (files["data.json"] !== undefined) JSON.parse(files["data.json"]);
     return { id: bundle.id, files };
 }
