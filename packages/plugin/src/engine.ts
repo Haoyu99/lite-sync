@@ -52,6 +52,8 @@ export interface VaultAdapter {
     // Creates missing folders. Returns the file's new stat.
     write(path: string, data: Bytes, mtime?: number): Promise<LocalFile>;
     trash(path: string): Promise<void>;
+    // Removes a folder only when it is completely empty (including hidden files). Returns true if removed.
+    removeEmptyFolder?(path: string): Promise<boolean>;
 }
 
 // Last synchronised state of one path. `hash` is null when the synchronised state is "deleted".
@@ -77,6 +79,7 @@ export interface SyncState {
     pendingDeletes: Record<string, { renamedTo?: string }>; // by path
     config: { rev: number; json: unknown } | null;
     localPaths: Record<string, string>; // canonical path -> Windows local path, including folders
+    emptyFoldersPruned?: boolean;
 }
 
 export interface StateStore {
@@ -124,8 +127,12 @@ export interface EngineOptions {
 }
 
 const key = (path: string) => path.normalize("NFC");
+const parentDir = (path: string) => {
+    const i = path.lastIndexOf("/");
+    return i > 0 ? path.slice(0, i) : "";
+};
 
-export const emptyState = (): SyncState => ({ version: 1, cursor: 0, index: {}, dirty: {}, pendingDeletes: {}, config: null, localPaths: {} });
+export const emptyState = (): SyncState => ({ version: 1, cursor: 0, index: {}, dirty: {}, pendingDeletes: {}, config: null, localPaths: {}, emptyFoldersPruned: false });
 
 type Remote = { deleted: true; rev: number } | { deleted: false; rev: number; meta: FileMeta; data: Bytes };
 
@@ -252,6 +259,7 @@ export class SyncEngine {
     async rescan() {
         await this.ensureLoaded();
         this.state.cursor = 0;
+        this.state.emptyFoldersPruned = false;
         this.hashCache.clear();
         await this.save();
     }
@@ -290,6 +298,7 @@ export class SyncEngine {
             // files which a push conflict marked for download.
             await this.pull();
             if (guarded === 0 && Object.keys(this.state.dirty).length > 0) await this.reconcile();
+            if (guarded === 0) await this.pruneDeletedFolders();
             const pending = new Set([...localPending, ...Object.values(this.state.dirty).map((d) => d.path), ...Object.keys(this.state.pendingDeletes)]).size;
             await this.report(pending, true);
             this.setStatus({
@@ -464,6 +473,7 @@ export class SyncEngine {
                 this.setIndex(path, id, remote.rev, null, null); // before trashing, see noteDeleted()
                 await this.save();
                 await this.o.vault.trash(path);
+                await this.pruneEmptyParents(path);
                 this.changed("deleted");
                 this.log(`已删除（来自其他设备）: ${path}`);
             } else {
@@ -539,6 +549,44 @@ export class SyncEngine {
         this.hashCache.set(key(copy), { ...(await this.o.vault.stat(copy))!, hash: localHash });
         this.setStatus({ conflicts: [...this.status.conflicts, copy] });
         this.log(`冲突，已保留本地版本为: ${copy}`);
+    }
+
+    private hasLiveChild(dir: string): boolean {
+        const prefix = dir + "/";
+        for (const [p, e] of Object.entries(this.state.index)) if (e.hash !== null && p.startsWith(prefix)) return true;
+        for (const d of Object.values(this.state.dirty)) if (!d.deleted && key(d.path).startsWith(prefix)) return true;
+        return false;
+    }
+
+    private async pruneEmptyParents(path: string) {
+        if (!this.o.vault.removeEmptyFolder) return;
+        let dir = parentDir(key(path));
+        while (dir) {
+            if (this.hasLiveChild(dir)) break;
+            if (!(await this.o.vault.removeEmptyFolder(dir))) break;
+            dir = parentDir(dir);
+        }
+    }
+
+    // One-time sweep (and on rescan) for empty folders left behind by deletions synced on earlier plugin versions.
+    private async pruneDeletedFolders() {
+        if (this.state.emptyFoldersPruned || !this.o.vault.removeEmptyFolder) return;
+        const dirs = new Set<string>();
+        for (const [p, e] of Object.entries(this.state.index)) {
+            if (e.hash !== null) continue;
+            let dir = parentDir(key(p));
+            while (dir && !dirs.has(dir)) {
+                dirs.add(dir);
+                dir = parentDir(dir);
+            }
+        }
+        const ordered = [...dirs].sort((a, b) => b.split("/").length - a.split("/").length || b.length - a.length);
+        for (const dir of ordered) {
+            if (this.hasLiveChild(dir)) continue;
+            await this.o.vault.removeEmptyFolder(dir);
+        }
+        this.state.emptyFoldersPruned = true;
+        await this.save();
     }
 
     private write(path: string, data: Bytes, mtime?: number) {

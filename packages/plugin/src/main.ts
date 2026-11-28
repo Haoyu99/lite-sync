@@ -73,8 +73,13 @@ function defaultDeviceName(): string {
 
 class ObsidianVault implements VaultAdapter {
     private app: App;
+    private pruning = new Set<string>();
     constructor(app: App) {
         this.app = app;
+    }
+
+    isPruning(path: string): boolean {
+        return this.pruning.has(path);
     }
 
     async list(): Promise<LocalFile[]> {
@@ -114,6 +119,27 @@ class ObsidianVault implements VaultAdapter {
         const f = this.app.vault.getFileByPath(normalizePath(path));
         // Uses Obsidian's configured deletion behaviour, so the file goes to the system or vault trash.
         if (f) await this.app.fileManager.trashFile(f);
+    }
+
+    async removeEmptyFolder(path: string): Promise<boolean> {
+        const dir = normalizePath(path);
+        const configDir = normalizePath(this.app.vault.configDir);
+        if (!dir || dir === "/" || dir === "." || dir === configDir || dir.startsWith(`${configDir}/`)) return false;
+        const folder = this.app.vault.getFolderByPath(dir);
+        if (!folder || folder.isRoot() || folder.children.length > 0) return false;
+        let listed: { files: string[]; folders: string[] };
+        try { listed = await this.app.vault.adapter.list(folder.path); }
+        catch { return false; }
+        if (listed.files.length > 0 || listed.folders.length > 0 || folder.children.length > 0) return false;
+        this.pruning.add(folder.path);
+        try {
+            await this.app.fileManager.trashFile(folder);
+            return true;
+        } catch {
+            return false;
+        } finally {
+            this.pruning.delete(folder.path);
+        }
     }
 }
 
@@ -185,6 +211,7 @@ const PHASE_LABEL: Record<SyncStatus["phase"], string> = {
 export default class LiteSyncPlugin extends Plugin {
     settings: Settings = { ...DEFAULT_SETTINGS };
     engine: SyncEngine | null = null;
+    private vault: ObsidianVault | null = null;
     private store: IdbStore | null = null;
     private statusEl: HTMLElement | null = null;
     private debounce: number | null = null;
@@ -237,6 +264,7 @@ export default class LiteSyncPlugin extends Plugin {
 
     onunload() {
         this.engine = null;
+        this.vault = null;
         this.pluginSync = null;
         this.feedback.clear();
         void this.store?.close();
@@ -271,6 +299,7 @@ export default class LiteSyncPlugin extends Plugin {
     async start() {
         this.stopSocket();
         this.engine = null;
+        this.vault = null;
         this.pluginSync = null;
         this.feedback.clear();
         const mk = this.app.loadLocalStorage(MK_STORAGE_KEY) as string | null;
@@ -285,10 +314,11 @@ export default class LiteSyncPlugin extends Plugin {
         this.firstSyncComplete = false;
         this.pluginProblem = "";
         this.inventoryJson = "";
+        this.vault = new ObsidianVault(this.app);
         this.engine = new SyncEngine({
             api: this.api(),
             keys,
-            vault: new ObsidianVault(this.app),
+            vault: this.vault,
             store: this.store!,
             deviceName: this.settings.deviceName,
             clientVersion: this.manifest.version,
@@ -412,6 +442,7 @@ export default class LiteSyncPlugin extends Plugin {
         this.registerEvent(this.app.vault.on("modify", (f) => f instanceof TFile && schedule()));
         this.registerEvent(
             this.app.vault.on("delete", (f) => {
+                if (this.vault?.isPruning(f.path)) return;
                 void this.engine?.noteDeleted(f.path).then(schedule);
             })
         );
@@ -535,6 +566,7 @@ export default class LiteSyncPlugin extends Plugin {
         // A master key or sync index left from an earlier pairing belongs to another vault or server.
         this.stopSocket();
         this.engine = null;
+        this.vault = null;
         this.pluginSync = null;
         this.feedback.clear();
         this.app.saveLocalStorage(MK_STORAGE_KEY, null);
@@ -561,6 +593,7 @@ export default class LiteSyncPlugin extends Plugin {
     async unpair() {
         this.stopSocket();
         this.engine = null;
+        this.vault = null;
         this.pluginSync = null;
         this.feedback.clear();
         this.app.saveLocalStorage(MK_STORAGE_KEY, null);

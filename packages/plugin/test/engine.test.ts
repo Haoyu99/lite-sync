@@ -17,8 +17,19 @@ const tick = () => (clock += 1000);
 
 class MemoryVault implements VaultAdapter {
     files = new Map<string, { data: Bytes; mtime: number }>();
+    folders = new Set<string>();
+    hidden = new Set<string>();
+    private ensureParents(path: string) {
+        const parts = path.split("/");
+        parts.pop();
+        let dir = "";
+        for (const part of parts) {
+            dir = dir ? `${dir}/${part}` : part;
+            this.folders.add(dir);
+        }
+    }
     async exists(path: string) {
-        return this.files.has(path) || [...this.files.keys()].some((p) => p.startsWith(path + "/"));
+        return this.files.has(path) || this.folders.has(path) || [...this.files.keys()].some((p) => p.startsWith(path + "/"));
     }
     async list(): Promise<LocalFile[]> {
         return [...this.files].map(([path, f]) => ({ path, mtime: f.mtime, size: f.data.byteLength }));
@@ -33,15 +44,35 @@ class MemoryVault implements VaultAdapter {
         return f.data;
     }
     async write(path: string, data: Bytes, mtime?: number) {
+        this.ensureParents(path);
         this.files.set(path, { data, mtime: mtime ?? tick() });
         return (await this.stat(path))!;
     }
     async trash(path: string) {
         this.files.delete(path);
     }
+    async removeEmptyFolder(path: string): Promise<boolean> {
+        if (!this.folders.has(path)) return false;
+        const prefix = path + "/";
+        const hasChild =
+            [...this.files.keys()].some((p) => p.startsWith(prefix)) ||
+            [...this.hidden].some((p) => p.startsWith(prefix)) ||
+            [...this.folders].some((d) => d.startsWith(prefix));
+        if (hasChild) return false;
+        this.folders.delete(path);
+        return true;
+    }
     // User edits
     set(path: string, text: string) {
+        this.ensureParents(path);
         this.files.set(path, { data: utf8(text), mtime: tick() });
+    }
+    mkdir(path: string) {
+        this.ensureParents(path + "/_");
+    }
+    addHidden(path: string) {
+        this.ensureParents(path);
+        this.hidden.add(path);
     }
     text(path: string) {
         const f = this.files.get(path);
@@ -49,6 +80,9 @@ class MemoryVault implements VaultAdapter {
     }
     paths() {
         return [...this.files.keys()].sort();
+    }
+    folderPaths() {
+        return [...this.folders].sort();
     }
 }
 
@@ -612,5 +646,120 @@ describe("sync engine", () => {
         assert.equal(b.engine.status.phase, "error");
         assert.match(b.engine.status.message!, /IndexedDB unavailable/);
         assert.equal(saves, 0);
+    });
+
+    it("prunes empty ancestor folders after remote deletions and folder renames", async () => {
+        const a = device("Mac");
+        const b = device("Windows");
+        a.vault.set("old/nested/a.md", "one");
+        a.vault.set("old/nested/b.md", "two");
+        a.vault.set("move-me/sub/note.md", "moved");
+        await a.engine.sync();
+        await b.engine.sync();
+        assert.deepEqual(b.vault.folderPaths(), ["move-me", "move-me/sub", "old", "old/nested"]);
+
+        // Deleting one of two files keeps the folder intact.
+        await a.vault.trash("old/nested/a.md");
+        await a.engine.noteDeleted("old/nested/a.md");
+        await a.engine.sync();
+        await b.engine.sync();
+        assert.deepEqual(b.vault.folderPaths(), ["move-me", "move-me/sub", "old", "old/nested"]);
+
+        // Deleting the remaining file and moving the other folder prunes empty ancestors.
+        await a.vault.trash("old/nested/b.md");
+        await a.engine.noteDeleted("old/nested/b.md");
+        const moved = a.vault.files.get("move-me/sub/note.md")!;
+        a.vault.files.delete("move-me/sub/note.md");
+        a.vault.files.set("new-home/sub/note.md", moved);
+        await a.engine.noteRenamed("move-me/sub/note.md", "new-home/sub/note.md");
+        await a.engine.sync();
+        await b.engine.sync();
+        assert.deepEqual(b.vault.paths(), ["new-home/sub/note.md"]);
+        assert.deepEqual(b.vault.folderPaths(), ["new-home", "new-home/sub"]);
+    });
+
+    it("keeps folders containing sibling empty folders, hidden files, or evicted tracked files", async () => {
+        const a = device("Mac");
+        const b = device("Linux");
+        a.vault.set("keep-sibling/gone/a.md", "a");
+        a.vault.set("keep-hidden/sub/b.md", "b");
+        a.vault.set("keep-evicted/gone.md", "g");
+        a.vault.set("keep-evicted/evicted.md", "stay");
+        await a.engine.sync();
+        await b.engine.sync();
+
+        b.vault.mkdir("keep-sibling/local-empty");
+        b.vault.addHidden("keep-hidden/sub/.DS_Store");
+        await b.vault.trash("keep-evicted/evicted.md"); // missing locally without noteDeleted()
+
+        for (const p of ["keep-sibling/gone/a.md", "keep-hidden/sub/b.md", "keep-evicted/gone.md"]) {
+            await a.vault.trash(p);
+            await a.engine.noteDeleted(p);
+        }
+        await a.engine.sync();
+        await b.engine.sync();
+
+        assert.deepEqual(b.vault.folderPaths(), [
+            "keep-evicted",
+            "keep-hidden",
+            "keep-hidden/sub",
+            "keep-sibling",
+            "keep-sibling/local-empty",
+        ]);
+        assert.equal(b.vault.text("keep-evicted/evicted.md"), "stay", "evicted file restored instead of deleted");
+    });
+
+    it("prunes Windows-aliased ancestor folders when deleted remotely", async () => {
+        const a = device("Mac");
+        a.vault.set("folder>/sub?/note.md", "content");
+        await a.engine.sync();
+        const b = device("Windows", { windows: true });
+        await b.engine.sync();
+        assert.deepEqual(b.vault.folderPaths(), ["folder＞", "folder＞/sub？"]);
+
+        await a.vault.trash("folder>/sub?/note.md");
+        await a.engine.noteDeleted("folder>/sub?/note.md");
+        await a.engine.sync();
+        await b.engine.sync();
+        assert.deepEqual(b.vault.paths(), []);
+        assert.deepEqual(b.vault.folderPaths(), []);
+    });
+
+    it("sweeps legacy empty folders once after upgrading from an earlier index without touching user folders", async () => {
+        const a = device("Mac");
+        a.vault.set("legacy/sub1/a.md", "a");
+        a.vault.set("legacy/sub2/b.md", "b");
+        a.vault.set("active/keep.md", "k");
+        await a.engine.sync();
+        for (const p of ["legacy/sub1/a.md", "legacy/sub2/b.md"]) {
+            await a.vault.trash(p);
+            await a.engine.noteDeleted(p);
+        }
+        await a.engine.sync();
+
+        // Simulate a device upgraded from 0.2.2: deletions already indexed, empty shells left on disk.
+        const store = new MemoryStore();
+        const snapshot = structuredClone(a.store.state!);
+        delete snapshot.emptyFoldersPruned;
+        store.state = snapshot;
+        const b = device("Windows", { store });
+        b.vault.set("active/keep.md", "k");
+        b.vault.mkdir("legacy/sub1");
+        b.vault.mkdir("legacy/sub2");
+        b.vault.mkdir("user-empty");
+
+        await b.engine.sync();
+        assert.deepEqual(b.vault.folderPaths(), ["active", "user-empty"]);
+        assert.equal(store.state!.emptyFoldersPruned, true);
+
+        // Recreating a previously deleted folder manually is preserved on subsequent normal syncs.
+        b.vault.mkdir("legacy");
+        await b.engine.sync();
+        assert.deepEqual(b.vault.folderPaths(), ["active", "legacy", "user-empty"]);
+
+        // Explicit rescan sweeps empty folders of deleted entries again.
+        await b.engine.rescan();
+        await b.engine.sync();
+        assert.deepEqual(b.vault.folderPaths(), ["active", "user-empty"]);
     });
 });

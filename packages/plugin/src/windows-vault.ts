@@ -109,4 +109,8 @@ export class WindowsVault implements VaultAdapter {
         return { ...file, path: normal(path) };
     }
     async trash(path: string) { await this.disk.trash(await this.prepare(path)); }
+    async removeEmptyFolder(path: string): Promise<boolean> {
+        if (!this.disk.removeEmptyFolder) return false;
+        return this.disk.removeEmptyFolder(this.toLocal(path));
+    }
 }
