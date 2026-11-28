@@ -33,6 +33,7 @@ import { PluginSync, type PluginSyncState } from "./plugin-sync.ts";
 import { PluginFiles, type PluginRuntime } from "./plugin-files.ts";
 import { collectPlugins } from "./plugins.ts";
 import { SyncNotice } from "./sync-notice.ts";
+import { removeEmptyVaultFolder } from "./vault-folders.ts";
 
 const MK_STORAGE_KEY = "lite-sync-mk";
 
@@ -124,21 +125,11 @@ class ObsidianVault implements VaultAdapter {
     async removeEmptyFolder(path: string): Promise<boolean> {
         const dir = normalizePath(path);
         const configDir = normalizePath(this.app.vault.configDir);
-        if (!dir || dir === "/" || dir === "." || dir === configDir || dir.startsWith(`${configDir}/`)) return false;
-        const folder = this.app.vault.getFolderByPath(dir);
-        if (!folder || folder.isRoot() || folder.children.length > 0) return false;
-        let listed: { files: string[]; folders: string[] };
-        try { listed = await this.app.vault.adapter.list(folder.path); }
-        catch { return false; }
-        if (listed.files.length > 0 || listed.folders.length > 0 || folder.children.length > 0) return false;
-        this.pruning.add(folder.path);
+        this.pruning.add(dir);
         try {
-            await this.app.fileManager.trashFile(folder);
-            return true;
-        } catch {
-            return false;
+            return await removeEmptyVaultFolder(this.app.vault, dir, configDir);
         } finally {
-            this.pruning.delete(folder.path);
+            this.pruning.delete(dir);
         }
     }
 }

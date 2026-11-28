@@ -1,7 +1,7 @@
 // Two simulated devices synchronising through the real server.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -11,6 +11,36 @@ import { createApp } from "../../server/src/app.ts";
 import { Db } from "../../server/src/db.ts";
 import { Api, type Http } from "../src/api.ts";
 import { type EngineOptions, type LocalFile, type StateStore, type SyncState, type SyncStatus, SyncEngine, type VaultAdapter } from "../src/engine.ts";
+import { removeEmptyVaultFolder } from "../src/vault-folders.ts";
+
+it("keeps a file written after Obsidian checks an empty folder, then prunes once the folder is empty", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lite-sync-prune-"));
+    try {
+        const diskFolder = join(root, "notes");
+        const note = join(diskFolder, ".new-note.md");
+        mkdirSync(diskFolder);
+        let writeDuringRemoval = true;
+        const vault = {
+            getFolderByPath: (path: string) => ({ path, children: [], isRoot: () => false }),
+            adapter: {
+                rmdir: async (path: string, recursive: boolean) => {
+                    assert.equal(recursive, false);
+                    if (writeDuringRemoval) writeFileSync(note, "keep this file");
+                    rmdirSync(join(root, path));
+                },
+            },
+        };
+        assert.equal(await removeEmptyVaultFolder(vault, "notes", "config"), false);
+        assert.equal(readFileSync(note, "utf8"), "keep this file");
+
+        writeDuringRemoval = false;
+        rmSync(note);
+        assert.equal(await removeEmptyVaultFolder(vault, "notes", "config"), true);
+        assert.equal(await removeEmptyVaultFolder(vault, "notes", "config"), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 let clock = Date.UTC(2026, 9, 30, 12, 0, 0);
 const tick = () => (clock += 1000);

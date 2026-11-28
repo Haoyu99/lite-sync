@@ -102,7 +102,7 @@ docker exec lite-sync lite-sync reset-2fa    # 验证码和恢复码都丢了，
 
 1. 把仓库推到 GitHub（私有仓库也可以）。
 2. 构建插件：`npm run build -w @lite-sync/plugin`。
-3. 在 GitHub 上新建一个 Release，标签和 `manifest.json` 里的版本号一致（例如 `0.2.3`），上传 `packages/plugin/dist/main.js`、`packages/plugin/dist/manifest.json` 和 `packages/plugin/dist/styles.css` 三个独立附件。
+3. 在 GitHub 上新建一个 Release，标签和 `manifest.json` 里的版本号一致，上传 `packages/plugin/dist/main.js`、`packages/plugin/dist/manifest.json` 和 `packages/plugin/dist/styles.css` 三个独立附件。
 4. 在每台设备的 Obsidian 里安装 BRAT，选择「Add beta plugin」，填写仓库地址。私有仓库需要在 BRAT 设置里填一个只读的 GitHub token。
 5. 启用 lite-sync，打开设置，填写服务器地址和后台生成的配对码，再输入口令。
 
@@ -122,6 +122,10 @@ docker exec lite-sync lite-sync reset-2fa    # 验证码和恢复码都丢了，
 已完成：加密同步、版本历史和单个文件回滚、冲突合并和冲突副本、大批量删除保护、设备配对和吊销、口令加 Google Authenticator 登录、恢复码、可开关的双重认证、统一配置。
 
 尚未实现：其他 `.obsidian` 配置和主题同步、整库按时间点恢复、主密钥轮换、历史清理、明文导出。
+
+## 0.2.5 空目录清理修复
+
+远端删除或移动文件后，插件用非递归方式清理本机的空父目录。如果目录在检查后收到新文件或出现子目录，删除会被拒绝。同步删除笔记仍遵循 Obsidian 的回收站设置。本次是客户端修复，直接更新插件即可。
 
 ## 0.2.3 社区目录收录准备
 
