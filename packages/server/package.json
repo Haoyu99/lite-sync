@@ -8,10 +8,12 @@
     "start": "node --experimental-strip-types src/main.ts"
   },
   "dependencies": {
+    "@hono/node-server": "2.1.11",
     "@lite-sync/core": "0.1.0",
-    "@hono/node-server": "2.1.5",
-    "hono": "4.13.14",
+    "hono": "4.13.23",
     "ws": "8.22.0"
   },
-  "devDependencies": { "@types/ws": "8.18.2" }
+  "devDependencies": {
+    "@types/ws": "8.18.2"
+  }
 }

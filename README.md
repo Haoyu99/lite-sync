@@ -1,156 +1,56 @@
-# lite-sync
+# Lite Sync
 
-Lite Sync syncs an Obsidian vault through a server you host, with end-to-end encrypted file contents and paths, version history, and conflict recovery. This project is in early development and is intended for a single user with multiple devices. See [English setup and disclosures](docs/README.en.md).
+English · [简体中文](README.zh-CN.md)
 
-lite-sync 是一个自托管的个人 Obsidian 同步项目，由 Obsidian 插件、同步服务端和网页管理后台组成。它把多台设备上的笔记和附件同步到你自己的服务器，使用端到端加密保护文件内容和路径，并保留文件版本，方便查看历史和回滚。
+Sync your Obsidian vault across devices through your own server. File contents and paths are encrypted on the client before upload. The server stores encrypted objects and version history, and provides a web admin interface. Lite Sync supports conflict copies, three-way text merging, device pairing and revocation, and optional TOTP for the admin interface.
 
-适合希望自行掌握服务器和数据存储、在多台设备之间同步个人笔记库的用户。项目面向单用户使用，目前处于第一阶段开发中。
+This is an early-development, single-user project. Test it with a separate vault and keep independent backups before using it for important notes. Desktop and mobile are declared supported; automated tests use simulated devices and do not replace testing on real Obsidian clients.
 
-## 使用前须知与数据披露
+## Requirements and disclosures
 
-- **服务器与费用**：必须自行部署 lite-sync 服务端并配置 HTTPS，没有开发者运营的同步服务，也不需要向开发者注册账号或购买订阅；服务器、域名和存储由你自行准备。网页后台需要初始化管理员口令，每台设备需要配对码和解锁口令。
-- **网络连接**：插件通过 HTTPS 和 WebSocket 连接你填写的服务器，进行配对、同步、版本查询和设备状态上报。插件不接入广告、分析或遥测服务；Obsidian 或 BRAT 自身的插件安装和更新可能访问 GitHub。
-- **传输与存储**：笔记、附件、文件路径、社区插件清单及插件包在客户端加密后上传。设备名、平台、客户端版本、设备标识、同步时间、文件大小、版本及活动元数据并不全部加密；服务器及反向代理也能观察连接 IP。端到端加密不隐藏全部使用信息。服务端数据与日志由部署者掌握。
-- **本地存储与访问**：插件读写当前笔记库及其配置目录，在 Obsidian 本地存储保存解锁后的主密钥，在插件配置保存设备令牌，并用 IndexedDB 保存同步索引。解除配对会清除该设备的这些凭据和索引；请保护设备和笔记库的本地数据。插件不扫描笔记库外的用户文件。
-- **其他插件的代码与配置**：新服务端默认开启社区插件同步，会在设备间复制 `main.js`、`manifest.json`、`styles.css` 和 `data.json`；配置中可能含有其他服务的凭据。新插件不会自动启用，已启用插件更新时会暂停并重新加载；启用状态仍由各设备决定。可以在网页后台关闭插件同步、关闭配置同步或排除指定插件。Lite Sync 自身和 LiveSync 永久排除，不会通过该同步机制自行更新。
-- **支持范围**：声明支持桌面与移动端，但实际设备兼容性仍需持续验证。请先用测试库验证，保留独立备份；同步与版本历史不能代替备份。后续涉及数据结构的测试版本可能需要按发布说明重新初始化服务端。
+- **Hosting and accounts.** Deploy the included server with Docker and an HTTPS reverse proxy. You provide hosting, storage, and a domain. There is no developer-operated sync service, developer account, or paid subscription. Set an admin passphrase, generate a pairing code, and unlock each device with the passphrase.
+- **Network.** The plugin connects to the server URL you configure using HTTPS and WebSocket for pairing, encrypted sync, version history, and status reporting. It does not use advertising, analytics, or telemetry services. Obsidian or BRAT may contact GitHub to install or update plugins.
+- **Data sent to the server.** The client encrypts notes, attachments, paths, plugin inventory, and plugin bundles before upload. The server can see operational metadata such as device names, platforms, client versions, device IDs, sync times, sizes, versions, and activity records. The server and reverse proxy can observe connection IP addresses. The operator controls server data and logs.
+- **Local storage.** The plugin reads and writes the current vault and its configuration directory. Obsidian's local storage holds the unlocked master key, plugin settings hold the device token, and IndexedDB holds sync indexes. Unpairing clears these local credentials and indexes. The plugin does not scan user files outside the vault.
+- **Community plugin sync.** New servers enable plugin code and configuration sync by default. Standard plugin files (`main.js`, `manifest.json`, optional `styles.css` and `data.json`) are encrypted and copied between devices. Other plugins' settings may contain credentials. Enable newly copied plugins on each device where you want to use them. Lite Sync unloads and reloads already-enabled plugins when their files are updated. Use the web admin to disable plugin sync, disable settings sync, or exclude plugin IDs. Lite Sync and LiveSync are excluded.
+- **Development releases.** Future test releases that change the server schema may require reinitializing server data according to their release notes. Normal server restarts preserve existing data.
 
-## 许可证
+## Deploy your server
 
-本项目采用 [MIT License](LICENSE)。打包进插件的第三方代码及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+1. Install Docker and configure a domain with an HTTPS reverse proxy.
+2. Clone `https://github.com/Haoyu99/lite-sync.git` and enter the repository.
+3. Copy `.env.example` to `.env`. Set `LITE_SYNC_DOMAIN` and generate `LITE_SYNC_SERVER_KEY` using `openssl rand -base64 48`.
+4. Run `docker compose up -d --build`.
+5. Proxy your HTTPS domain to `http://127.0.0.1:28470`. Enable WebSocket support for `/v1/events` and a sufficient request size (for example `client_max_body_size 100m` with Nginx).
+6. Run `docker logs lite-sync` and open the one-time initialization link. Set the admin passphrase and configure authentication.
 
-## 主要功能
+Back up both the server's `data` directory and `.env`. Stop the container or use SQLite's backup command to obtain a consistent database backup. Do not run multiple sync tools on the same vault concurrently.
 
-- **加密同步**：文件在客户端加密后上传，服务器保存密文；网页后台在浏览器内解密。
-- **同步进度**：插件显示当前文件、处理数量和上传/下载阶段，完成后提示本次变更数量。
-- **目录与插件清单**：后台按目录浏览文件，按设备查看社区插件的版本和启用状态，过滤 lite-sync 自身。插件清单端到端加密。
-- **插件同步**：以首次同步设备为插件基准，同步社区插件代码及配置；各设备独立启用、独立卸载，不同步快捷键，永久排除 lite-sync 和 LiveSync。
-- **网页解锁**：默认记住解锁 7 天，刷新不重复输入口令；新浏览器首次通过双重认证后可保留信任。
-- **多设备同步**：通过插件同步笔记与附件，使用 WebSocket 通知其他设备获取变更。
-- **版本与恢复**：保留文件历史，支持单个文件回滚。
-- **冲突处理**：支持三方合并、冲突副本和大批量删除保护。
-- **网页管理**：查看文件、设备和活动，管理设备配对、吊销及统一配置。
-- **自行部署**：提供 Docker 部署方式，支持口令登录、可选的 TOTP 双重认证和恢复码。
+## Install and pair the plugin
 
-本次实现 `.obsidian` 内社区插件标准文件同步；其他 Obsidian 配置、主题和整库按时间点恢复尚未实现。详细规则见 [插件同步与网页登录](docs/plugin-sync.md)。
+Install the plugin from GitHub Releases or through BRAT.
 
-- 设计：[docs/design.md](docs/design.md)
-- 全流程说明：[docs/flow.md](docs/flow.md)
+1. In Obsidian, install BRAT and use **Add beta plugin** with `https://github.com/Haoyu99/lite-sync`.
+2. Alternatively, download the plugin ZIP from [Releases](https://github.com/Haoyu99/lite-sync/releases), extract the plugin files to `<vault>/<configDir>/plugins/lite-sync/` (normally `.obsidian/plugins/lite-sync/`), and enable Lite Sync. GitHub's automatic source archives are not installable plugins.
+3. Open Lite Sync settings. Enter the HTTPS server URL (**服务器地址**) and a device name (**设备名**).
+4. Generate a pairing code with **添加设备** in the web admin, enter it as **配对码**, and select **配对**.
+5. Enter the vault passphrase (**口令**) and select **解锁**. The first sync starts automatically. The current plugin interface is in Chinese.
+6. Pair additional devices one at a time. Files with divergent changes can produce conflict copies. Review sync status and the admin interface before removing any independent backups.
 
-## 目录
+Use **立即同步** to sync immediately and **显示同步日志** to inspect recent local sync logs. Devices poll periodically and also receive WebSocket notifications while connected. Mobile operating systems may suspend Obsidian in the background.
 
-| 路径 | 内容 |
-|---|---|
-| `packages/core` | 加密、协议类型、三方合并、路径规则、统一配置（插件、服务端、后台共用） |
-| `packages/server` | 同步 API、后台 API、SQLite、密文存储、TOTP |
-| `packages/plugin` | Obsidian 插件，同步引擎在 `src/engine.ts` |
-| `packages/admin` | 管理后台（Svelte），构建后由服务端在 `/admin` 提供 |
+Updates are available through BRAT or by replacing the release's plugin files while preserving `data.json`. If Lite Sync appears in Obsidian's community plugin browser, you can install and update it there.
 
-## 开发
+## Update an existing server
 
-当前只有开发者自己测试功能。暂不要求旧版本、旧协议或旧数据库兼容；按当前需求直接调整设计和数据结构，必要时可以清空测试数据并重建数据库，不维护历史迁移分支。后续面向真实用户发布时再评估兼容策略。
+Version 0.2.6 updates the Hono server dependencies. Pull the updated repository and run `docker compose up -d --build` on the server to apply the security fixes. Keep your existing `.env` and `data` directory. Devices can keep their existing pairing.
 
-```sh
-npm install
-npm test          # 核心、服务端、两台模拟设备的同步测试
-npm run check     # 类型检查和 svelte-check
-npm run build     # 构建后台和插件
-```
+## Develop and verify
 
-本地试用后台：
+Use Node.js 24. Run `npm ci`, then `npm test`, `npm run check`, `npm run lint:plugin`, and `npm run build` from the repository root.
 
-```sh
-LITE_SYNC_SERVER_KEY=$(openssl rand -base64 48) LITE_SYNC_DATA_DIR=./data \
-LITE_SYNC_INSECURE_COOKIES=1 PORT=28470 npm run dev:server
-# 另开一个终端
-npm run build -w @lite-sync/admin
-```
+## Source and license
 
-打开服务端日志里的初始化链接。`LITE_SYNC_INSECURE_COOKIES=1` 只用于本地 HTTP，部署时不要设置。
+The repository contains `packages/plugin` (Obsidian integration), `packages/core` (shared protocol and cryptography), `packages/server`, and `packages/admin`. Read the [sync behavior](docs/plugin-sync.md), [design](docs/design.md), and [community submission guide](docs/community-submission.md).
 
-## 部署
-
-前提：服务器装有 Docker，并有一个负责 HTTPS 的反向代理（例如 1Panel 的网站功能）。
-
-```sh
-git clone https://github.com/Haoyu99/lite-sync.git && cd lite-sync
-cp .env.example .env
-# 编辑 .env：填写 LITE_SYNC_DOMAIN，并用 openssl rand -base64 48 生成 LITE_SYNC_SERVER_KEY
-docker compose up -d --build
-docker logs lite-sync      # 复制里面的一次性初始化链接
-```
-
-服务只监听本机的 `127.0.0.1:28470`，端口可以在 `.env` 里用 `LITE_SYNC_PORT` 修改。在反向代理里为域名新建站点，代理到 `http://127.0.0.1:28470`，并开启 HTTPS。代理还需要满足两点：
-
-- 支持 WebSocket，路径是 `/v1/events`。不支持时同步仍然可用，但其他设备要等每分钟一次的定时同步才能收到修改。
-- 允许较大的请求。Nginx 和 OpenResty 默认只允许 1MB，超过的附件会上传失败，建议把 `client_max_body_size` 调到 `100m`。
-
-CSP 等安全响应头由 lite-sync 自己设置，代理里不需要再加。
-
-### 常用命令
-
-```sh
-docker exec lite-sync lite-sync setup-link   # 初始化链接丢了，重新生成（只在初始化前有效）
-docker exec lite-sync lite-sync reset-2fa    # 验证码和恢复码都丢了，重置后下次登录重新绑定
-```
-
-### 备份
-
-需要备份的是 `./data` 目录（SQLite 和密文文件）和 `.env`。备份里只有密文，可以放在任何地方。SQLite 运行在 WAL 模式，备份前先停容器，或者用 `sqlite3 data/lite-sync.db ".backup data/backup.db"`。
-
-## 安装插件（BRAT）
-
-1. 把仓库推到 GitHub（私有仓库也可以）。
-2. 构建插件：`npm run build -w @lite-sync/plugin`。
-3. 在 GitHub 上新建一个 Release，标签和 `manifest.json` 里的版本号一致，上传 `packages/plugin/dist/main.js`、`packages/plugin/dist/manifest.json` 和 `packages/plugin/dist/styles.css` 三个独立附件。
-4. 在每台设备的 Obsidian 里安装 BRAT，选择「Add beta plugin」，填写仓库地址。私有仓库需要在 BRAT 设置里填一个只读的 GitHub token。
-5. 启用 lite-sync，打开设置，填写服务器地址和后台生成的配对码，再输入口令。
-
-更新插件时，修改 `manifest.json`、`packages/plugin/manifest.json` 和插件包版本，更新根目录及插件目录的 `versions.json`，重新构建并发布同版本标签的 Release，然后在 BRAT 里手动检查更新。
-
-官方社区目录收录准备和提交步骤见 [docs/community-submission.md](docs/community-submission.md)。当前仍通过 BRAT 或 Release 附件安装，不代表已经获得官方收录。
-
-## 从 LiveSync 迁移
-
-1. 在所有设备上停用 LiveSync，并把库复制一份作为备份。
-2. 在内容最全的设备上配对 lite-sync，等状态栏显示「✓ 已同步」。
-3. 其他设备逐台配对。两边内容不同的文件会另存为冲突副本，不会被覆盖。
-4. 在后台检查冲突副本，确认后删除，再卸载 LiveSync。
-
-## 目前的范围（第一阶段）
-
-已完成：加密同步、版本历史和单个文件回滚、冲突合并和冲突副本、大批量删除保护、设备配对和吊销、口令加 Google Authenticator 登录、恢复码、可开关的双重认证、统一配置。
-
-尚未实现：其他 `.obsidian` 配置和主题同步、整库按时间点恢复、主密钥轮换、历史清理、明文导出。
-
-## 0.2.5 空目录清理修复
-
-远端删除或移动文件后，插件用非递归方式清理本机的空父目录。如果目录在检查后收到新文件或出现子目录，删除会被拒绝。同步删除笔记仍遵循 Obsidian 的回收站设置。本次是客户端修复，直接更新插件即可。
-
-## 0.2.3 社区目录收录准备
-
-补齐 MIT 许可证、第三方依赖声明、英文安装说明和网络及数据披露，增加官方推荐的 ESLint 检查。日志样式改为单独的 `styles.css`，插件 manifest 解析增加类型校验，IndexedDB 错误保留原因并给出明确提示。
-
-通过 BRAT 更新，或用 Release 的 `main.js`、`manifest.json` 和 `styles.css` 覆盖插件目录内对应文件，保留本地 `data.json`。本次不改变服务端协议和数据库结构，无需清空数据或重新配对。社区目录收录状态以官方页面为准。
-
-## 0.2.2 升级
-
-Windows 现在会为不支持的路径创建本地可用的名称，而不再要求先在源设备重命名。例如 `14-> 15.md` 在 Windows 上保存为 `14-＞ 15.md`，云端及其他设备仍使用原来的文件名；编辑、删除和重命名通过持久化的对应关系同步，不产生重复笔记。
-
-插件通过 BRAT 更新，或下载 Release 附件 `lite-sync-0.2.2.zip`，将其中的 `main.js`、`manifest.json` 覆盖到笔记库的 `.obsidian/plugins/lite-sync/`，再重启插件并立即同步。保留本地 `data.json`。GitHub 自动生成的 Source code 压缩包不用于安装插件。
-
-本次修复在客户端完成，不改变服务端 API 或数据库结构；已部署 0.2.1 服务端的设备只需更新插件，无需清空数据或重新配对。包含 0.2.1 的同步状态、提示闪烁、首次下载及 WebSocket 握手修复。
-
-## 0.2.0 测试库重新初始化
-
-项目仍处于内部测试阶段，服务端只保留一份当前数据库结构，不提供旧数据库自动升级。此次清空服务端数据后重新部署和初始化。
-
-清空范围为 `data` 下的数据库、密文文件、历史、设备配对及网页登录状态。设备上的本地笔记和插件不受影响；原设备需解除旧配对，再用新配对码重新加入。
-
-1. 重建并启动服务端和后台。
-2. 通过服务端生成的一次性初始化链接重新设置口令和双重认证。
-3. 在希望作为基准的设备安装 `packages/plugin/dist/main.js` 和 `packages/plugin/dist/manifest.json`（0.2.0），解除旧配对，重新配对并完成文件、插件同步。
-4. 其他设备逐台更新并重新配对。新库默认开启插件及插件配置同步。
-5. 网页首次登录时可以记住解锁 7 天，首次通过双重认证后保留浏览器信任。
-
-后续正常重启沿用已经建立的数据库，不会再次清空。同步范围、冲突恢复及登录规则见 [详细说明](docs/plugin-sync.md)。
+Licensed under the [MIT License](LICENSE). Bundled dependencies retain their licenses. See the [third-party notices](THIRD_PARTY_NOTICES.md).
